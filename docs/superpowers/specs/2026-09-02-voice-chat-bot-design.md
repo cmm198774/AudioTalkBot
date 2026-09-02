@@ -25,8 +25,10 @@ system prompt 可自由定制。通用型机器人（不限场景，人设完全
     `input_audio_buffer.speech_started`（检测到用户开口，用于打断）、`response.done`、`error`
 - **模型能力**：端到端（音频进、音频出）、服务端 VAD 端点检测、动态打断、毫秒级响应、
   可返回语音转写文本。
-- **鉴权**：DashScope API Key（`DASHSCOPE_API_KEY`）。
-- **音频格式**：24kHz、16bit、单声道 PCM（实现时以官方文档最终确认）。
+- **鉴权**：握手头 `Authorization: Bearer <API_KEY>`，端点
+  `wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=<model>`。
+- **音频格式**：输入 16kHz / 输出 24kHz，16bit、单声道 PCM，base64 编码。
+- **限制**：`turn_detection` 只能在发送首个音频前修改（连接时设置一次即可）。
 
 ## 3. 需求清单（用户确认）
 
@@ -46,7 +48,7 @@ system prompt 可自由定制。通用型机器人（不限场景，人设完全
 ┌────────────────────────────┐        ┌─────────────────────────────┐        ┌──────────────────┐
 │      浏览器前端 (单页面)      │  WS    │      Python 后端 (FastAPI)    │  WS    │  阿里云百炼        │
 │                            │◄──────►│                             │◄──────►│  DashScope       │
-│  麦克风采集 → 重采样 24kHz    │        │  双向桥接：                    │        │  qwen-audio-3.0- │
+│  麦克风采集 → 重采样 16kHz    │        │  双向桥接：                    │        │  qwen-audio-3.0- │
 │  播放队列（可瞬间清空=打断）   │        │  · 上行音频 → input_audio_*   │        │  realtime-plus   │
 │  字幕流 + 状态指示            │        │  · 下行音频 → 转发前端          │        │                  │
 │  设置面板（prompt/输出模式）   │        │  · 转写字幕 → 广播前端          │        │  服务端 VAD       │
@@ -157,7 +159,7 @@ system prompt 可自由定制。通用型机器人（不限场景，人设完全
 ### 7.2 两个音频模块（技术核心）
 
 - **采集**：`getUserMedia`（开启 echoCancellation + noiseSuppression + autoGainControl）
-  → AudioWorklet 中 48kHz→24kHz 重采样转 Int16 → 每 100ms 一块 base64 发后端
+  → AudioWorklet 中 48kHz→16kHz 重采样转 Int16 → 每 100ms 一块 base64 发后端
 - **播放**：音频块解码（base64 → Int16 → Float32 → AudioBuffer）后进入队列，
   按时间戳预约连续播放（边收边播）；收到 `interrupt` 时
   stop 所有 source、清空队列、重置时间游标 → 打断即停
