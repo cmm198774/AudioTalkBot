@@ -1,0 +1,17 @@
+# 密钥与本地配置
+.env
+*.key
+.claude/
+
+# 运行时数据
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+
+# 测试与临时产物
+tests/*.log
+tests/*.txt
