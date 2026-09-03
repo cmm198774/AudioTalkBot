@@ -238,11 +238,16 @@ function appendTranscript(role, delta, final) {
         }
         state.currentAssistantBubble.textContent += delta;
     } else if (role === 'user' && final) {
-        state.currentAssistantBubble = null;
         const bubble = document.createElement('div');
         bubble.className = 'bubble user';
         bubble.textContent = delta;
-        box.appendChild(bubble);
+        // 用户转写常晚于本轮回复开头到达：把问题气泡插到正在流式的
+        // 助手气泡之前，保证"问题在回答前"，且回答不被切成两段
+        if (state.currentAssistantBubble && state.currentAssistantBubble.parentNode === box) {
+            box.insertBefore(bubble, state.currentAssistantBubble);
+        } else {
+            box.appendChild(bubble);
+        }
     }
     box.scrollTop = box.scrollHeight;
 }
@@ -350,6 +355,7 @@ function handleServerMessage(msg) {
             break;
         case 'interrupt':
             AudioIO.interrupt();
+            state.currentAssistantBubble = null;  // 清空当前助手气泡，让用户问题显示在最前面
             setStatus('listening');
             break;
         case 'transcript':

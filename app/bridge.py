@@ -302,7 +302,6 @@ class RealtimeBridge:
         elif etype == "response.done":
             await self._handle_response_done()
         elif etype == "conversation.item.input_audio_transcription.completed":
-            self._need_new_bubble = True  # 用户转写完成，标记需要新气泡
             await self._handle_user_transcript(event)
         elif etype == "error":
             err = event.get("error", {})
