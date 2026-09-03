@@ -4,14 +4,15 @@
 # 下行：服务端事件分流 → 音频/字幕/黑板/打断/状态/错误
 #
 # 板书段解析：模型回复中 [start]...[end] 包裹的内容只写黑板不朗读。
-# 文本流按标记切成字幕/黑板两路；音频流按"文本领先音频"的时间差把
-# 黑板窗口对应的音频丢弃（模型被要求在窗口前后停顿，容忍切割误差）。
+# 文本流按标记切成字幕/黑板两路，标记位置记为"干净文本"的字符偏移；
+# 音频流按累计时长换算成已朗读字符数，落在黑板字符区间内的音频丢弃。
+# 用字符空间而非时间对齐，是因为文本常先于音频一次性到达，
+# 且音频块可能突发到达——累计朗读时长与到达时刻无关，映射稳定。
 # ==========================================
 import asyncio
 import json
 import logging
 import ssl
-import time
 
 import certifi
 from websockets.asyncio.client import connect as ws_connect
@@ -26,12 +27,15 @@ _START_MARKER = "[start]"
 _END_MARKER = "[end]"
 _MARKERS = (_START_MARKER, _END_MARKER)
 
-# 无法测量文本领先量时的缺省值（实测约 0.65~1.1 秒）
-_DEFAULT_LEAD = 0.8
+# 输出采样率下每秒音频的字节数（16bit 单声道）
+_BYTES_PER_SECOND = 24000 * 2
 
-# 窗口边界容差（秒）：音频块有百毫秒量级时长，且浮点换算有误差，
-# 窗口两侧各放宽一点，模型又被要求在窗口前后停顿，容差不会误伤语音
-_WINDOW_PAD = 0.05
+# 朗读速度估计（字/秒）：音频累计时长乘以它得到已朗读字符数。
+# 指令要求模型在板书前后停顿约两秒，停顿带来的余量足以吸收速度估计误差
+_SPEECH_CHARS_PER_SEC = 4.0
+
+# 黑板字符区间两侧的容差（字）
+_CHAR_PAD = 1.5
 
 # 已知但无需处理的服务端事件类型
 _IGNORED_EVENTS = (
@@ -61,6 +65,25 @@ def _build_ssl_context() -> ssl.SSLContext:
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.load_verify_locations(certifi.where())
     return ctx
+
+
+# ==========================================
+# base64 音频块换算为秒数
+# ==========================================
+def _b64_seconds(b64_audio: str) -> float:
+    """
+    把 base64 音频块换算成秒数（24kHz 16bit 单声道）。
+    Args:
+        b64_audio: base64 编码的 PCM (str)
+    Returns:
+        float: 音频时长（秒）
+    """
+    n = len(b64_audio)
+    if n == 0:
+        return 0.0
+    pad = 2 if b64_audio.endswith("==") else (1 if b64_audio.endswith("=") else 0)
+    byte_len = n * 3 // 4 - pad
+    return max(0.0, byte_len / _BYTES_PER_SECOND)
 
 
 # ==========================================
@@ -98,7 +121,7 @@ class RealtimeBridge:
     """
 
     def __init__(self, send_to_client, on_final_transcript=None, api_key: str = "",
-                 ws_factory=None, clock=None):
+                 ws_factory=None):
         """
         初始化桥接器。
         Args:
@@ -106,13 +129,11 @@ class RealtimeBridge:
             on_final_transcript: 异步回调 (role, text)，最终转写落盘用 (callable)
             api_key: DashScope API key，缺省读环境变量 (str)
             ws_factory: 可注入的 WS 连接工厂，测试用 (callable)
-            clock: 返回当前秒数的可调用对象，缺省 time.monotonic，测试可注入假时钟 (callable)
         """
         self._send_to_client = send_to_client
         self._on_final_transcript = on_final_transcript
         self._api_key = api_key or get_api_key()
         self._ws_factory = ws_factory or self._default_ws_factory
-        self._clock = clock or time.monotonic
         self._ws = None
         self._recv_task = None
         self._speaking = False
@@ -129,9 +150,9 @@ class RealtimeBridge:
         self._seg = "text"          # 当前所处段：text 字幕 / board 黑板
         self._buf = ""              # 已累积但尚未发布的文本尾巴
         self._seg_emitted = False   # 当前黑板段是否已发出过内容（首块带 new_segment）
-        self._windows = []          # 黑板时间窗口列表 [[start, end|None], ...]
-        self._t_first_text = None   # 本回合首个文本增量时刻
-        self._t_first_audio = None  # 本回合首个音频增量时刻
+        self._clean_len = 0         # 已发布"干净文本"的字符总数（不含标记）
+        self._char_windows = []     # 黑板字符区间列表 [[start, end|None], ...]
+        self._audio_seconds = 0.0   # 本回合已收到的音频总秒数（含被丢弃的）
 
     # ==========================================
     # 默认 WebSocket 工厂（生产路径）
@@ -296,22 +317,23 @@ class RealtimeBridge:
             logger.debug("未处理的事件类型: %s", etype)
 
     # ==========================================
-    # 内部：回复音频增量（黑板窗口内丢弃）
+    # 内部：回复音频增量（黑板区间内丢弃）
     # ==========================================
     async def _handle_audio_delta(self, event: dict) -> None:
         """
-        转发音频增量；落在黑板时间窗口内的音频直接丢弃，
-        形成"老师写黑板时自然停顿"的效果。
+        转发音频增量；先用"已收到的音频总秒数"定位本块在朗读中的位置，
+        落在黑板字符区间内的音频直接丢弃，形成"老师写黑板时自然停顿"。
+        定位只依赖累计时长，音频突发到达也不受影响。
         Args:
             event: response.audio.delta 事件 (dict)
         """
         delta = event.get("delta", "")
         if not delta:
             return
-        now = self._clock()
-        if self._t_first_audio is None:
-            self._t_first_audio = now
-        if self._in_board_window(now):
+        chunk_seconds = _b64_seconds(delta)
+        pos_seconds = self._audio_seconds
+        self._audio_seconds += chunk_seconds
+        if self._in_board_cut(pos_seconds, chunk_seconds):
             return
         if not self._speaking:
             self._speaking = True
@@ -319,29 +341,29 @@ class RealtimeBridge:
         await self._emit({"type": "audio", "data": delta})
 
     # ==========================================
-    # 内部：判断音频时刻是否落在黑板窗口
+    # 内部：判断音频块是否落在黑板字符区间
     # ==========================================
-    def _in_board_window(self, audio_time: float) -> bool:
+    def _in_board_cut(self, pos_seconds: float, chunk_seconds: float) -> bool:
         """
-        音频时间减去"文本领先量"换算成文本时间，
-        落在任一 [start, end] 窗口内即视为黑板内容对应的语音。
+        音频块覆盖的朗读区间 [pos, pos+dur] 换算成字符位置，
+        与任一黑板字符区间相交即视为板书内容对应的语音。
         Args:
-            audio_time: 音频增量到达时刻（秒）(float)
+            pos_seconds: 本块之前已收到的音频总秒数 (float)
+            chunk_seconds: 本块音频的秒数 (float)
         Returns:
             bool: True 表示该音频应被丢弃
         """
-        if not self._windows:
+        if not self._char_windows:
             return False
-        if self._t_first_text is None or self._t_first_audio is None:
-            lead = _DEFAULT_LEAD
-        else:
-            lead = max(0.0, self._t_first_audio - self._t_first_text)
-        text_time = audio_time - lead
-        for start, end in self._windows:
-            if end is None:
-                if text_time >= start - _WINDOW_PAD:
-                    return True
-            elif start - _WINDOW_PAD <= text_time <= end + _WINDOW_PAD:
+        seg_start = pos_seconds
+        seg_end = pos_seconds + chunk_seconds
+        for char_start, char_end in self._char_windows:
+            win_start = max(0.0, char_start - _CHAR_PAD) / _SPEECH_CHARS_PER_SEC
+            if char_end is None:
+                win_end = float("inf")
+            else:
+                win_end = (char_end + _CHAR_PAD) / _SPEECH_CHARS_PER_SEC
+            if seg_start < win_end and seg_end > win_start:
                 return True
         return False
 
@@ -358,9 +380,6 @@ class RealtimeBridge:
         delta = event.get("delta", "")
         if not delta:
             return
-        now = self._clock()
-        if self._t_first_text is None:
-            self._t_first_text = now
         self._assistant_text += delta
         self._buf += delta
         await self._drain_buf()
@@ -397,17 +416,17 @@ class RealtimeBridge:
     # ==========================================
     def _flip_segment(self) -> None:
         """
-        字幕段遇 [start] 切到黑板段并开窗；黑板段遇 [end] 切回并关窗。
+        字幕段遇 [start] 切到黑板段，以当前干净字符数开字符区间；
+        黑板段遇 [end] 切回，以当前干净字符数关区间。
         """
-        now = self._clock()
         if self._seg == "text":
             self._seg = "board"
             self._seg_emitted = False
-            self._windows.append([now, None])
+            self._char_windows.append([self._clean_len, None])
         else:
             self._seg = "text"
-            if self._windows and self._windows[-1][1] is None:
-                self._windows[-1][1] = now
+            if self._char_windows and self._char_windows[-1][1] is None:
+                self._char_windows[-1][1] = self._clean_len
 
     # ==========================================
     # 内部：按当前段发布一段文本
@@ -415,9 +434,12 @@ class RealtimeBridge:
     async def _emit_seg(self, chunk: str) -> None:
         """
         黑板段发到黑板（该段首块带 new_segment 标记），字幕段发到字幕。
+        两段都计入干净字符数：模型会把板书内容读出来，
+        字符区间必须包含板书文字才能对准朗读位置。
         Args:
             chunk: 要发布的文本片段 (str)
         """
+        self._clean_len += len(chunk)
         if self._seg == "board":
             msg = {"type": "board", "delta": chunk}
             if not self._seg_emitted:
