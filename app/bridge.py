@@ -34,11 +34,12 @@ _MARKERS = (_START_MARKER, _END_MARKER)
 _BYTES_PER_SECOND = 24000 * 2
 
 # 朗读速度估计（字/秒）：音频累计时长乘以它得到已朗读字符数。
+# 实测模型语速约 5~6 字/秒，取 5.5 作为平衡值。
 # 指令要求模型在板书前后停顿约两秒，停顿带来的余量足以吸收速度估计误差
-_SPEECH_CHARS_PER_SEC = 4.0
+_SPEECH_CHARS_PER_SEC = 5.5
 
-# 黑板字符区间两侧的容差（字）
-_CHAR_PAD = 1.5
+# 黑板字符区间两侧的容差（字）：补偿语速波动与 VAD 触发延迟
+_CHAR_PAD = 1.0
 
 # 已知但无需处理的服务端事件类型
 _IGNORED_EVENTS = (
@@ -292,6 +293,7 @@ class RealtimeBridge:
             await self._emit({"type": "state", "value": "listening"})
         elif etype == "response.created":
             self._reset_turn()
+            await self._emit({"type": "new_response"})
             await self._emit({"type": "state", "value": "thinking"})
         elif etype == "response.done":
             await self._handle_response_done()

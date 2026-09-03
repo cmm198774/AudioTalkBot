@@ -358,6 +358,9 @@ function handleServerMessage(msg) {
         case 'board':
             appendBoard(msg.delta, !!msg.new_segment);
             break;
+        case 'new_response':
+            state.currentAssistantBubble = null;
+            break;
         case 'state':
             setStatus(msg.value);
             break;

@@ -202,9 +202,9 @@ async def test_send_audio():
 
 # ==========================================
 # 测试混合回合：段外字幕、段内黑板、黑板区间音频被丢弃
-# 口头 8 字 + 板书 4 字，字符区间 [8, 12]；按 4 字/秒换算成
-# 秒区间 [1.625, 3.375]（含 1.5 字容差）。
-# 音频块：A[0,1) 转发，B[1,2.5) 丢弃，C[2.5,3.5) 丢弃，D[3.5,4.5) 转发
+# 口头 8 字 + 板书 4 字，字符区间 [8, 12]；按 5.5 字/秒、1 字容差换算成
+# 秒区间 [7.0/5.5, 13.0/5.5] ≈ [1.27, 2.36]。
+# 音频块：A[0,1) 转发，B[1,2.5) 丢弃，C[2.5,3.5) 转发，D[3.5,4.5) 转发
 # ==========================================
 async def test_mixed_turn_segments_and_audio_cut():
     chunk_a = pcm_b64(1.0, "A")
@@ -231,9 +231,9 @@ async def test_mixed_turn_segments_and_audio_cut():
     boards = [m for m in received if m["type"] == "board"]
     assert "".join(b["delta"] for b in boards) == "勾股定理"
     assert boards[0].get("new_segment") is True
-    # 区间内音频 B、C 丢弃，区间外 A、D 转发
+    # 区间 [1.27, 2.36] 内音频 B 丢弃，区间外 A、C、D 转发
     audios = [m["data"] for m in received if m["type"] == "audio"]
-    assert audios == [chunk_a, chunk_d]
+    assert audios == [chunk_a, chunk_c, chunk_d]
     assert finals == [("assistant", "好，大家看黑板。[start]勾股定理[end]大家多练习。")]
     await bridge.close()
 
@@ -281,8 +281,8 @@ async def test_multiple_board_segments_flags():
 
 # ==========================================
 # 测试未闭合 [end]：开场白之后的音频全部丢弃（黑板读到完）
-# 开场白 6 字，区间起点 (6-1.5)/4 = 1.125 秒：
-# A[0,1) 在开场白内转发，B[1,2)、C[2,3) 丢弃
+# 开场白 6 字，区间起点 (6-1.0)/5.5 ≈ 0.91 秒：
+# A[0,1) 与窗口 [0.91, inf) 相交丢弃，B[1,2)、C[2,3) 也丢弃
 # ==========================================
 async def test_unclosed_end_discards_tail_audio():
     chunk_a = pcm_b64(1.0, "A")
@@ -300,7 +300,7 @@ async def test_unclosed_end_discards_tail_audio():
     await bridge.connect("", "audio_text")
     await bridge.wait_recv_done()
     audios = [m["data"] for m in received if m["type"] == "audio"]
-    assert audios == [chunk_a]
+    assert audios == []
     board = "".join(m["delta"] for m in received if m["type"] == "board")
     assert board == "公式"
     await bridge.close()
