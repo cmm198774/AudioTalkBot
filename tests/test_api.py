@@ -1,9 +1,9 @@
 # ==========================================
-# HTTP API 测试：配置、会话、预设接口
+# HTTP API 测试：配置、会话、预设接口、上下文管理
 # ==========================================
 from fastapi.testclient import TestClient
 
-from app import main
+from app import main, storage
 
 
 # ==========================================
@@ -210,6 +210,76 @@ def test_ws_chat_connect_failure(monkeypatch):
         msg = ws.receive_json()
         assert msg["type"] == "error"
         assert "401" in msg["message"]
+
+
+# ==========================================
+# 测试清空历史端点
+# ==========================================
+def test_clear_history():
+    client = TestClient(main.app)
+    sid = client.post("/api/sessions", json={}).json()["id"]
+    storage.append_transcript(sid, "user", "你好")
+    storage.append_transcript(sid, "assistant", "Bonjour")
+    resp = client.post(f"/api/sessions/{sid}/clear_history")
+    assert resp.status_code == 200
+    assert resp.json()["transcript"] == []
+    assert client.post("/api/sessions/不存在/clear_history").status_code == 404
+
+
+# ==========================================
+# 假摘要器：不发网络请求，返回固定摘要
+# ==========================================
+async def fake_summarizer(old_transcript):
+    return f"共总结了{len(old_transcript)}条"
+
+
+# ==========================================
+# 测试压缩上下文：旧对话被摘要，最近 6 条原样保留
+# ==========================================
+def test_compress_history(monkeypatch):
+    monkeypatch.setattr(main, "SUMMARIZER", fake_summarizer)
+    client = TestClient(main.app)
+    sid = client.post("/api/sessions", json={}).json()["id"]
+    for i in range(10):
+        role = "user" if i % 2 == 0 else "assistant"
+        storage.append_transcript(sid, role, f"第{i}条")
+    resp = client.post(f"/api/sessions/{sid}/compress")
+    assert resp.status_code == 200
+    transcript = resp.json()["transcript"]
+    assert len(transcript) == 7
+    assert transcript[0]["role"] == "assistant"
+    assert "共总结了4条" in transcript[0]["text"]
+    assert transcript[1]["text"] == "第4条"
+    assert transcript[-1]["text"] == "第9条"
+
+
+# ==========================================
+# 测试历史过短压缩返回 400
+# ==========================================
+def test_compress_history_too_short(monkeypatch):
+    monkeypatch.setattr(main, "SUMMARIZER", fake_summarizer)
+    client = TestClient(main.app)
+    sid = client.post("/api/sessions", json={}).json()["id"]
+    storage.append_transcript(sid, "user", "你好")
+    assert client.post(f"/api/sessions/{sid}/compress").status_code == 400
+
+
+# ==========================================
+# 测试压缩时摘要服务失败返回 502
+# ==========================================
+def test_compress_history_summarizer_error(monkeypatch):
+    async def broken_summarizer(old_transcript):
+        raise OSError("连接超时")
+
+    monkeypatch.setattr(main, "SUMMARIZER", broken_summarizer)
+    client = TestClient(main.app)
+    sid = client.post("/api/sessions", json={}).json()["id"]
+    for i in range(10):
+        storage.append_transcript(sid, "user", f"第{i}条")
+    resp = client.post(f"/api/sessions/{sid}/compress")
+    assert resp.status_code == 502
+    # 压缩失败不改动历史
+    assert len(client.get(f"/api/sessions/{sid}").json()["transcript"]) == 10
 
 
 # ==========================================

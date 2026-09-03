@@ -14,9 +14,13 @@ const state = {
     levelTimer: null,
     boardOn: true,
     boardRatio: 0.5,
+    currentSession: null,
 };
 
 window.AUDIO_CONFIG = { input_sample_rate: 16000, output_sample_rate: 24000 };
+
+// 模型最大输入约 16384 token，用量条以此为满格（字符数近似 token 数）
+const CONTEXT_LIMIT = 16000;
 
 const STATUS_TEXT = {
     idle: '空闲',
@@ -483,11 +487,82 @@ async function selectSession(sessionId) {
     clearBoard();
     state.sessionId = sessionId;
     const session = await api(`/api/sessions/${sessionId}`);
+    state.currentSession = session;
     document.getElementById('session-title').textContent = session.title;
     document.getElementById('prompt-input').value = session.system_prompt;
     setOutputMode(session.output_mode);
     renderTranscriptHistory(session.transcript);
+    updateContextUsage();
     renderSessions();
+}
+
+// ==========================================
+// 上下文用量显示：字符数近似 token 数
+// ==========================================
+function updateContextUsage() {
+    const el = document.getElementById('context-usage');
+    const transcript = (state.currentSession && state.currentSession.transcript) || [];
+    const used = transcript.reduce((sum, item) => sum + (item.text || '').length, 0);
+    el.textContent = `上下文用量：约 ${used} / ${CONTEXT_LIMIT} 字符（${transcript.length} 条）`;
+}
+
+// ==========================================
+// 回读当前会话并刷新字幕与用量（不打断进行中的对话）
+// ==========================================
+async function refreshCurrentSession() {
+    if (!state.sessionId) {
+        return;
+    }
+    state.currentSession = await api(`/api/sessions/${state.sessionId}`);
+    renderTranscriptHistory(state.currentSession.transcript);
+    updateContextUsage();
+}
+
+// ==========================================
+// 压缩上下文：旧对话交给后端摘要，下次开始对话生效
+// ==========================================
+async function compressContext() {
+    if (!state.sessionId) {
+        toast('请先选择一个会话');
+        return;
+    }
+    try {
+        await api(`/api/sessions/${state.sessionId}/compress`, { method: 'POST' });
+        toast('上下文已压缩，下次开始对话生效');
+        await refreshCurrentSession();
+    } catch (err) {
+        toast(err.message, 6000);
+    }
+}
+
+// ==========================================
+// 清空历史：确认后清空本会话对话记录
+// ==========================================
+async function clearHistory() {
+    if (!state.sessionId) {
+        toast('请先选择一个会话');
+        return;
+    }
+    if (!window.confirm('确定清空本会话的全部对话记录吗？')) {
+        return;
+    }
+    await api(`/api/sessions/${state.sessionId}/clear_history`, { method: 'POST' });
+    toast('历史已清空，下次开始对话生效');
+    await refreshCurrentSession();
+}
+
+// ==========================================
+// 打开设置面板：先回读会话刷新上下文用量
+// ==========================================
+async function openSettings() {
+    if (state.sessionId) {
+        try {
+            await refreshCurrentSession();
+        } catch (err) {
+            // 回读失败不影响面板打开，用量显示保持旧值
+        }
+    }
+    document.getElementById('settings-drawer').classList.remove('hidden');
 }
 
 async function deleteSession(sessionId) {
@@ -605,9 +680,9 @@ function bindEvents() {
         }
     });
     document.getElementById('new-session-btn').addEventListener('click', newSession);
-    document.getElementById('settings-btn').addEventListener('click', () => {
-        document.getElementById('settings-drawer').classList.remove('hidden');
-    });
+    document.getElementById('settings-btn').addEventListener('click', openSettings);
+    document.getElementById('compress-btn').addEventListener('click', compressContext);
+    document.getElementById('clear-history-btn').addEventListener('click', clearHistory);
     document.getElementById('close-settings-btn').addEventListener('click', () => {
         document.getElementById('settings-drawer').classList.add('hidden');
     });

@@ -80,6 +80,15 @@
                 <label><input type="radio" name="output-mode" value="text"> 仅文字</label>
             </div>
 
+            <label class="field-label">上下文管理</label>
+            <div class="row">
+                <span id="context-usage" class="hint">上下文用量：--</span>
+            </div>
+            <div class="row">
+                <button id="compress-btn" title="把旧对话总结成一条摘要，降低上下文占用">压缩上下文</button>
+                <button id="clear-history-btn" title="清空本会话全部对话记录">清空历史</button>
+            </div>
+
             <label class="field-label">其他</label>
             <div class="row">
                 <label><input type="checkbox" id="subtitle-toggle" checked> 显示字幕</label>

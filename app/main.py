@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app import storage
+from app import context, storage
 from app.bridge import RealtimeBridge
 from app.config import (
     BOARD_PROMPT,
@@ -164,6 +164,52 @@ async def delete_session(session_id: str):
 
 
 # ==========================================
+# 会话：清空历史
+# ==========================================
+@app.post("/api/sessions/{session_id}/clear_history")
+async def clear_history(session_id: str):
+    """
+    清空会话的全部对话历史。
+    Args:
+        session_id: 会话 id (str)
+    Returns:
+        dict: 更新后的会话
+    """
+    session = storage.replace_transcript(session_id, [])
+    if session is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return session
+
+
+# ==========================================
+# 会话：压缩上下文（LLM 摘要旧对话）
+# ==========================================
+@app.post("/api/sessions/{session_id}/compress")
+async def compress_history(session_id: str):
+    """
+    把旧对话交给文本模型总结成一条摘要，最近几条原样保留，
+    降低上下文占用。正在进行的对话不受影响，下次开始对话生效。
+    Args:
+        session_id: 会话 id (str)
+    Returns:
+        dict: 更新后的会话
+    """
+    session = storage.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    old, recent = context.split_old_recent(session["transcript"])
+    if not old:
+        raise HTTPException(status_code=400, detail="对话历史太少，无需压缩")
+    try:
+        summary = await SUMMARIZER(old)
+    except Exception as exc:
+        logger.warning("上下文压缩失败: %s", exc)
+        raise HTTPException(status_code=502, detail=f"摘要失败：{exc}")
+    new_transcript = context.merge_compressed(summary, recent)
+    return storage.replace_transcript(session_id, new_transcript)
+
+
+# ==========================================
 # 预设：列表
 # ==========================================
 @app.get("/api/presets")
@@ -209,6 +255,9 @@ async def delete_preset(preset_id: str):
 # 桥接类注入点（测试用假实现替换）
 # ==========================================
 BRIDGE_CLASS = RealtimeBridge
+
+# 摘要器注入点（测试用假实现替换，避免发真实请求）
+SUMMARIZER = context.summarize_old_turns
 
 
 # ==========================================

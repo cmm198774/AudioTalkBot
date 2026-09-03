@@ -193,6 +193,29 @@ def append_transcript(session_id: str, role: str, text: str) -> dict | None:
 
 
 # ==========================================
+# 会话：整体替换对话历史（清空/压缩用）
+# ==========================================
+def replace_transcript(session_id: str, transcript: list) -> dict | None:
+    """
+    用新列表整体替换会话的对话历史。
+    Args:
+        session_id: 会话 id (str)
+        transcript: 新的对话记录列表 (list)
+    Returns:
+        dict | None: 更新后的会话，不存在返回 None
+    """
+    with _LOCK:
+        sessions = _load(SESSIONS_FILE, "sessions")
+        for session in sessions:
+            if session["id"] == session_id:
+                session["transcript"] = list(transcript)
+                session["updated_at"] = _now()
+                _save(SESSIONS_FILE, "sessions", sessions)
+                return session
+    return None
+
+
+# ==========================================
 # 预设：列表
 # ==========================================
 def list_presets() -> list:

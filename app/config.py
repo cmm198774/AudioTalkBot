@@ -50,6 +50,9 @@ AUDIO_CHUNK_MS = 100
 # ---- 输入转写模型（若服务端报错，按官方文档调整此常量）----
 TRANSCRIPTION_MODEL = "qwen3-asr-flash"
 
+# ---- 上下文压缩用的文本摘要模型（可用 .env 的 SUMMARY_MODEL 覆盖）----
+SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "qwen-plus")
+
 # ---- 输出模式 → API modalities 映射 ----
 OUTPUT_MODE_MODALITIES = {
     "audio": ["audio"],
