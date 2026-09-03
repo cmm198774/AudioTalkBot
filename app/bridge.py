@@ -127,6 +127,7 @@ class RealtimeBridge:
         self._ws = None
         self._recv_task = None
         self._speaking = False
+        self._need_new_bubble = True  # 标记是否需要创建新字幕气泡
         self._reset_turn()
 
     # ==========================================
@@ -289,15 +290,19 @@ class RealtimeBridge:
             await self._handle_transcript_delta(event)
         elif etype == "input_audio_buffer.speech_started":
             self._speaking = False
+            self._need_new_bubble = True  # 用户开口，标记需要新气泡
             await self._emit({"type": "interrupt"})
             await self._emit({"type": "state", "value": "listening"})
         elif etype == "response.created":
             self._reset_turn()
-            await self._emit({"type": "new_response"})
+            if self._need_new_bubble:
+                await self._emit({"type": "new_response"})
+                self._need_new_bubble = False
             await self._emit({"type": "state", "value": "thinking"})
         elif etype == "response.done":
             await self._handle_response_done()
         elif etype == "conversation.item.input_audio_transcription.completed":
+            self._need_new_bubble = True  # 用户转写完成，标记需要新气泡
             await self._handle_user_transcript(event)
         elif etype == "error":
             err = event.get("error", {})
