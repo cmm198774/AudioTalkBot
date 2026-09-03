@@ -99,9 +99,13 @@ function setStatus(value) {
 
 // ==========================================
 // 小黑板：追加内容、清空、显隐、比例拖拽
+// 新黑板段（new_segment）与已有内容之间空一行
 // ==========================================
-function appendBoard(delta) {
+function appendBoard(delta, newSegment) {
     const content = document.getElementById('board-content');
+    if (newSegment && content.textContent.length > 0) {
+        content.textContent += '\n\n';
+    }
     content.textContent += delta;
     content.scrollTop = content.scrollHeight;
 }
@@ -240,23 +244,73 @@ function appendTranscript(role, delta, final) {
 }
 
 // ==========================================
+// 把混合回复文本拆成口头段与黑板段
+// [start]...[end] 之间为黑板内容，其余为口头内容
+// ==========================================
+function splitBoardParts(text) {
+    const parts = [];
+    let rest = text;
+    for (;;) {
+        const start = rest.indexOf('[start]');
+        if (start === -1) {
+            if (rest) {
+                parts.push({ kind: 'text', text: rest });
+            }
+            break;
+        }
+        if (start > 0) {
+            parts.push({ kind: 'text', text: rest.slice(0, start) });
+        }
+        const end = rest.indexOf('[end]', start + '[start]'.length);
+        if (end === -1) {
+            const tail = rest.slice(start + '[start]'.length);
+            if (tail) {
+                parts.push({ kind: 'board', text: tail });
+            }
+            break;
+        }
+        const boardText = rest.slice(start + '[start]'.length, end);
+        if (boardText) {
+            parts.push({ kind: 'board', text: boardText });
+        }
+        rest = rest.slice(end + '[end]'.length);
+    }
+    return parts;
+}
+
+// ==========================================
 // 从历史记录渲染字幕（切换会话时）
-// 助手消息以 [text]: 开头的是板书，渲染为黑板样式气泡
+// 旧格式 [text]: 开头的助手消息整体渲染为板书气泡；
+// 新格式含 [start]/[end] 的消息拆成口头气泡与 📋 板书气泡
 // ==========================================
 function renderTranscriptHistory(transcript) {
     const box = document.getElementById('transcript');
     box.innerHTML = '';
     state.currentAssistantBubble = null;
     for (const item of transcript) {
-        const bubble = document.createElement('div');
         if (item.role === 'assistant' && item.text.startsWith('[text]:')) {
+            const bubble = document.createElement('div');
             bubble.className = 'bubble assistant board';
             bubble.textContent = '📋 ' + item.text.slice('[text]:'.length);
+            box.appendChild(bubble);
+        } else if (item.role === 'assistant' && item.text.includes('[start]')) {
+            for (const part of splitBoardParts(item.text)) {
+                const bubble = document.createElement('div');
+                if (part.kind === 'board') {
+                    bubble.className = 'bubble assistant board';
+                    bubble.textContent = '📋 ' + part.text;
+                } else {
+                    bubble.className = 'bubble assistant';
+                    bubble.textContent = part.text;
+                }
+                box.appendChild(bubble);
+            }
         } else {
+            const bubble = document.createElement('div');
             bubble.className = `bubble ${item.role}`;
             bubble.textContent = item.text;
+            box.appendChild(bubble);
         }
-        box.appendChild(bubble);
     }
     box.scrollTop = box.scrollHeight;
 }
@@ -298,7 +352,7 @@ function handleServerMessage(msg) {
             appendTranscript(msg.role, msg.delta, !!msg.final);
             break;
         case 'board':
-            appendBoard(msg.delta);
+            appendBoard(msg.delta, !!msg.new_segment);
             break;
         case 'state':
             setStatus(msg.value);
