@@ -176,3 +176,12 @@ def test_ws_chat_connect_failure(monkeypatch):
         msg = ws.receive_json()
         assert msg["type"] == "error"
         assert "401" in msg["message"]
+
+
+# ==========================================
+# 测试静态 JS/CSS 资源可访问
+# ==========================================
+def test_static_assets_served():
+    client = TestClient(main.app)
+    for path in ("/static/style.css", "/static/audio.js", "/static/app.js", "/static/capture-processor.worklet.js"):
+        assert client.get(path).status_code == 200, path

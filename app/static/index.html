@@ -2,9 +2,85 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>语音对话机器人</title>
+    <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <p>占位页面，后续任务替换</p>
+    <div class="app">
+        <!-- 左侧：会话列表 -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h1>会话</h1>
+                <button id="new-session-btn" title="新建会话">＋</button>
+            </div>
+            <ul id="session-list"></ul>
+            <div class="sidebar-footer">
+                <button id="settings-btn">⚙ 设置</button>
+            </div>
+        </aside>
+
+        <!-- 中央：对话区 -->
+        <main class="main">
+            <header class="main-header">
+                <span id="session-title">未选择会话</span>
+                <span id="status-dot" class="status-dot idle"></span>
+                <span id="status-text">空闲</span>
+            </header>
+            <div id="transcript" class="transcript"></div>
+            <div id="disconnect-banner" class="banner hidden">
+                连接已断开
+                <button id="reconnect-btn">重连</button>
+            </div>
+            <footer class="controls">
+                <button id="talk-btn" class="talk-btn">🎙 开始对话</button>
+            </footer>
+        </main>
+
+        <!-- 右侧抽屉：设置 -->
+        <aside id="settings-drawer" class="drawer hidden">
+            <div class="drawer-header">
+                <h2>设置</h2>
+                <button id="close-settings-btn">✕</button>
+            </div>
+
+            <label class="field-label" for="prompt-input">System Prompt（人设）</label>
+            <textarea id="prompt-input" rows="8" placeholder="例如：你是一位耐心的法语老师，请用简单的法语和我对话，并在每句话后附上中文翻译。"></textarea>
+            <div class="row">
+                <button id="save-prompt-btn">保存并生效</button>
+            </div>
+
+            <label class="field-label" for="preset-select">人设预设</label>
+            <div class="row">
+                <select id="preset-select"></select>
+                <button id="apply-preset-btn">应用</button>
+                <button id="save-preset-btn">存为预设</button>
+                <button id="delete-preset-btn">删除</button>
+            </div>
+
+            <label class="field-label">输出模式</label>
+            <div class="row radio-row">
+                <label><input type="radio" name="output-mode" value="audio_text" checked> 语音+文字</label>
+                <label><input type="radio" name="output-mode" value="audio"> 仅语音</label>
+                <label><input type="radio" name="output-mode" value="text"> 仅文字</label>
+            </div>
+
+            <label class="field-label">其他</label>
+            <div class="row">
+                <label><input type="checkbox" id="subtitle-toggle" checked> 显示字幕</label>
+            </div>
+
+            <p class="hint">建议佩戴耳机，避免外放声音被麦克风拾取造成误打断。</p>
+            <p id="api-key-warning" class="hint warn hidden">
+                ⚠ 未检测到 API Key：请在项目根目录 .env 中配置
+                DASHSCOPE_API_KEY 后重启服务。
+            </p>
+        </aside>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+
+    <script src="/static/audio.js"></script>
+    <script src="/static/app.js"></script>
 </body>
 </html>

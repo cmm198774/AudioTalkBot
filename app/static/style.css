@@ -1,0 +1,273 @@
+/* 深色主题布局：侧栏 + 对话区 + 设置抽屉 */
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #14161a;
+    color: #e6e6e6;
+    height: 100vh;
+    overflow: hidden;
+}
+
+.app {
+    display: flex;
+    height: 100vh;
+}
+
+/* ---- 左侧会话栏 ---- */
+.sidebar {
+    width: 240px;
+    background: #1b1e24;
+    border-right: 1px solid #2a2e36;
+    display: flex;
+    flex-direction: column;
+}
+
+.sidebar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+}
+
+.sidebar-header h1 {
+    font-size: 16px;
+}
+
+#session-list {
+    list-style: none;
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 8px;
+}
+
+.session-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    margin-bottom: 4px;
+    border-radius: 8px;
+    cursor: pointer;
+    color: #c8ccd4;
+}
+
+.session-item:hover {
+    background: #242832;
+}
+
+.session-item.active {
+    background: #2d4a72;
+    color: #ffffff;
+}
+
+.session-item .title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.session-item .del-btn {
+    background: none;
+    border: none;
+    color: #8a8f98;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+.session-item .del-btn:hover {
+    color: #ff6b6b;
+}
+
+.sidebar-footer {
+    padding: 12px 16px;
+    border-top: 1px solid #2a2e36;
+}
+
+/* ---- 中央对话区 ---- */
+.main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+.main-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 20px;
+    border-bottom: 1px solid #2a2e36;
+}
+
+#session-title {
+    font-weight: 600;
+}
+
+.status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #555a63;
+}
+
+.status-dot.listening { background: #4caf50; }
+.status-dot.thinking  { background: #ffb74d; }
+.status-dot.speaking  { background: #42a5f5; }
+
+#status-text {
+    color: #9aa0aa;
+    font-size: 13px;
+}
+
+.transcript {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.bubble {
+    max-width: 72%;
+    padding: 10px 14px;
+    border-radius: 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.bubble.user {
+    align-self: flex-end;
+    background: #2d4a72;
+}
+
+.bubble.assistant {
+    align-self: flex-start;
+    background: #23272f;
+}
+
+.banner {
+    margin: 0 24px;
+    padding: 8px 14px;
+    background: #4a3333;
+    border-radius: 8px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.controls {
+    padding: 16px;
+    display: flex;
+    justify-content: center;
+}
+
+.talk-btn {
+    padding: 12px 36px;
+    font-size: 16px;
+    border: none;
+    border-radius: 24px;
+    background: #2d7ff9;
+    color: #fff;
+    cursor: pointer;
+}
+
+.talk-btn.talking {
+    background: #d9534f;
+}
+
+/* ---- 设置抽屉 ---- */
+.drawer {
+    width: 340px;
+    background: #1b1e24;
+    border-left: 1px solid #2a2e36;
+    padding: 16px;
+    overflow-y: auto;
+}
+
+.drawer-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.field-label {
+    display: block;
+    margin: 14px 0 6px;
+    color: #9aa0aa;
+    font-size: 13px;
+}
+
+#prompt-input {
+    width: 100%;
+    background: #14161a;
+    color: #e6e6e6;
+    border: 1px solid #2a2e36;
+    border-radius: 8px;
+    padding: 10px;
+    resize: vertical;
+}
+
+.row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-top: 6px;
+}
+
+.radio-row label {
+    font-size: 13px;
+}
+
+select, button {
+    background: #23272f;
+    color: #e6e6e6;
+    border: 1px solid #2a2e36;
+    border-radius: 6px;
+    padding: 6px 10px;
+    cursor: pointer;
+}
+
+select {
+    flex: 1;
+}
+
+button:hover {
+    background: #2c313b;
+}
+
+.hint {
+    margin-top: 14px;
+    font-size: 12px;
+    color: #8a8f98;
+}
+
+.hint.warn {
+    color: #ffb74d;
+}
+
+.hidden {
+    display: none !important;
+}
+
+/* ---- Toast ---- */
+.toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #333a45;
+    color: #fff;
+    padding: 10px 18px;
+    border-radius: 8px;
+    z-index: 99;
+}
