@@ -12,12 +12,15 @@
 import asyncio
 import json
 import logging
-import ssl
 
-import certifi
 from websockets.asyncio.client import connect as ws_connect
 
-from app.config import DASHSCOPE_WS_URL, OUTPUT_MODE_MODALITIES, get_api_key
+from app.config import (
+    DASHSCOPE_WS_URL,
+    OUTPUT_MODE_MODALITIES,
+    build_ssl_context,
+    get_api_key,
+)
 from app.protocol import build_audio_append, build_history_events, build_session_update
 
 logger = logging.getLogger(__name__)
@@ -51,20 +54,6 @@ _IGNORED_EVENTS = (
     "response.audio_transcript.done",
     "response.text.done",
 )
-
-
-# ==========================================
-# 构造使用 certifi 证书的 SSL 上下文
-# ==========================================
-def _build_ssl_context() -> ssl.SSLContext:
-    """
-    本环境的默认证书上下文加载会失败，需显式用 certifi 证书构造。
-    Returns:
-        ssl.SSLContext: 已加载 CA 证书的客户端上下文
-    """
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.load_verify_locations(certifi.where())
-    return ctx
 
 
 # ==========================================
@@ -166,7 +155,7 @@ class RealtimeBridge:
         Returns:
             WebSocket 连接对象
         """
-        return await ws_connect(url, additional_headers=headers, ssl=_build_ssl_context())
+        return await ws_connect(url, additional_headers=headers, ssl=build_ssl_context())
 
     # ==========================================
     # 建立连接并配置会话

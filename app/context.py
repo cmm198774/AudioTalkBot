@@ -6,7 +6,12 @@ import logging
 
 import httpx
 
-from app.config import DASHSCOPE_BASE_URL, SUMMARY_MODEL, get_api_key
+from app.config import (
+    DASHSCOPE_BASE_URL,
+    SUMMARY_MODEL,
+    build_ssl_context,
+    get_api_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +119,8 @@ async def summarize_old_turns(old_transcript: list) -> str:
         ],
     }
     headers = {"Authorization": f"Bearer {get_api_key()}"}
-    async with httpx.AsyncClient(timeout=60) as client:
+    # 本环境默认证书库不可用，必须显式传 certifi 构造的 SSL 上下文
+    async with httpx.AsyncClient(timeout=60, verify=build_ssl_context()) as client:
         resp = await client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]

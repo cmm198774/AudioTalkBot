@@ -2,9 +2,11 @@
 # 全局配置：环境变量加载、模型常量、音频参数、路径
 # ==========================================
 import os
+import ssl
 from pathlib import Path
 from urllib.parse import urlparse
 
+import certifi
 from dotenv import load_dotenv
 
 # 项目根目录（app/ 的上一层）
@@ -51,7 +53,8 @@ AUDIO_CHUNK_MS = 100
 TRANSCRIPTION_MODEL = "qwen3-asr-flash"
 
 # ---- 上下文压缩用的文本摘要模型（可用 .env 的 SUMMARY_MODEL 覆盖）----
-SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "qwen-plus")
+# 必须是工作空间端点实际提供的模型（/compatible-mode/v1/models 可查）
+SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "qwen3.6-flash")
 
 # ---- 输出模式 → API modalities 映射 ----
 OUTPUT_MODE_MODALITIES = {
@@ -80,6 +83,21 @@ BOARD_PROMPT = (
 DATA_DIR = BASE_DIR / "data"
 SESSIONS_FILE = DATA_DIR / "sessions.json"
 PRESETS_FILE = DATA_DIR / "presets.json"
+
+
+# ==========================================
+# 构造使用 certifi 证书的 SSL 上下文
+# ==========================================
+def build_ssl_context() -> ssl.SSLContext:
+    """
+    本环境的默认证书上下文加载会失败，需显式用 certifi 证书构造，
+    所有对外 HTTPS/WSS 连接都应使用它。
+    Returns:
+        ssl.SSLContext: 已加载 CA 证书的客户端上下文
+    """
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.load_verify_locations(certifi.where())
+    return ctx
 
 
 # ==========================================

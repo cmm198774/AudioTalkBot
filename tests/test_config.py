@@ -1,6 +1,8 @@
 # ==========================================
 # 配置模块测试：常量正确性与环境变量读取
 # ==========================================
+import ssl
+
 from app import config
 
 
@@ -61,3 +63,19 @@ def test_get_api_key_present(monkeypatch):
 def test_board_prompt_marker():
     assert "[start]" in config.BOARD_PROMPT
     assert "[end]" in config.BOARD_PROMPT
+
+
+# ==========================================
+# 测试摘要模型默认取工作空间内实际提供的 qwen3.6-flash
+# ==========================================
+def test_summary_model_default():
+    assert config.SUMMARY_MODEL == "qwen3.6-flash"
+
+
+# ==========================================
+# 测试 SSL 上下文已加载证书且开启校验
+# ==========================================
+def test_build_ssl_context():
+    ctx = config.build_ssl_context()
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
