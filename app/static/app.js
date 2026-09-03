@@ -41,12 +41,47 @@ async function api(path, options) {
 // ==========================================
 // Toast 提示
 // ==========================================
-function toast(message) {
+function toast(message, durationMs) {
     const el = document.getElementById('toast');
     el.textContent = message;
     el.classList.remove('hidden');
     clearTimeout(toast._timer);
-    toast._timer = setTimeout(() => el.classList.add('hidden'), 3000);
+    toast._timer = setTimeout(() => el.classList.add('hidden'), durationMs || 3000);
+}
+
+// ==========================================
+// 麦克风权限预检：按浏览器当前授权状态给出明确提示
+// ==========================================
+async function promptMicPermission() {
+    if (!navigator.permissions || !navigator.permissions.query) {
+        return;
+    }
+    try {
+        const status = await navigator.permissions.query({ name: 'microphone' });
+        if (status.state === 'denied') {
+            toast('麦克风权限已被浏览器拒绝。请点击地址栏左侧图标 → 站点设置 → 麦克风 → 改为"允许"，然后刷新页面重试。', 12000);
+        } else if (status.state === 'prompt') {
+            toast('即将请求麦克风权限，请在浏览器弹出的对话框中点击"允许"。', 5000);
+        }
+    } catch (e) {
+        // 部分浏览器不支持查询麦克风权限状态，忽略
+    }
+}
+
+// ==========================================
+// 麦克风错误：把错误类型翻译成具体原因与解决指引
+// ==========================================
+function showMicError(err) {
+    const name = err && err.name ? err.name : 'UnknownError';
+    const guidance = {
+        NotAllowedError: '麦克风权限被拒绝。点击地址栏左侧图标 → 站点设置 → 麦克风 → "允许"，然后刷新页面。',
+        NotFoundError: '找不到麦克风设备。请确认耳机麦克风已连接并被系统识别。',
+        NotReadableError: '麦克风被其他程序占用。请关闭占用麦克风的应用后重试。',
+        SecurityError: '当前页面不是安全上下文，无法使用麦克风。请通过 http://localhost:8000 访问。',
+    };
+    const msg = guidance[name] || `麦克风错误（${name}）：${(err && err.message) || '请检查浏览器权限'}`;
+    console.error('麦克风错误:', err);
+    toast(msg, 12000);
 }
 
 // ==========================================
@@ -161,6 +196,7 @@ async function startTalk() {
     if (!state.sessionId) {
         await newSession();
     }
+    await promptMicPermission();
     openWebSocket();
     try {
         await AudioIO.startCapture((b64) => {
@@ -169,7 +205,7 @@ async function startTalk() {
             }
         });
     } catch (err) {
-        toast('无法访问麦克风，请检查浏览器权限');
+        showMicError(err);
         return;
     }
     state.talking = true;
