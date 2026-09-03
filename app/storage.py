@@ -190,3 +190,55 @@ def append_transcript(session_id: str, role: str, text: str) -> dict | None:
                 _save(SESSIONS_FILE, "sessions", sessions)
                 return session
     return None
+
+
+# ==========================================
+# 预设：列表
+# ==========================================
+def list_presets() -> list:
+    """
+    返回所有预设。
+    Returns:
+        list: 预设字典列表
+    """
+    return _load(PRESETS_FILE, "presets")
+
+
+# ==========================================
+# 预设：创建
+# ==========================================
+def create_preset(name: str, prompt: str) -> dict:
+    """
+    创建人设预设并落盘。
+    Args:
+        name: 预设名称 (str)
+        prompt: 预设的 system prompt 内容 (str)
+    Returns:
+        dict: 新建的预设记录
+    """
+    preset = {"id": uuid.uuid4().hex, "name": name, "prompt": prompt}
+    with _LOCK:
+        presets = _load(PRESETS_FILE, "presets")
+        presets.append(preset)
+        _save(PRESETS_FILE, "presets", presets)
+    return preset
+
+
+# ==========================================
+# 预设：删除
+# ==========================================
+def delete_preset(preset_id: str) -> bool:
+    """
+    删除指定预设。
+    Args:
+        preset_id: 预设 id (str)
+    Returns:
+        bool: 是否删除成功
+    """
+    with _LOCK:
+        presets = _load(PRESETS_FILE, "presets")
+        remaining = [p for p in presets if p["id"] != preset_id]
+        if len(remaining) == len(presets):
+            return False
+        _save(PRESETS_FILE, "presets", remaining)
+        return True

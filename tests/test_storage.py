@@ -88,3 +88,16 @@ def test_sessions_persist_to_disk(tmp_path):
     session = storage.create_session("落盘测试", "audio_text")
     raw = json.loads((tmp_path / "sessions.json").read_text(encoding="utf-8"))
     assert raw["sessions"][0]["id"] == session["id"]
+
+
+# ==========================================
+# 测试预设的创建、列表、删除
+# ==========================================
+def test_presets_crud():
+    preset = storage.create_preset("法语老师", "你是一位耐心的法语老师")
+    assert preset["name"] == "法语老师"
+    assert preset["prompt"] == "你是一位耐心的法语老师"
+    assert len(storage.list_presets()) == 1
+    assert storage.delete_preset(preset["id"]) is True
+    assert storage.list_presets() == []
+    assert storage.delete_preset(preset["id"]) is False
