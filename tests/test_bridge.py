@@ -10,8 +10,9 @@ from app.bridge import RealtimeBridge
 # 假 WebSocket：脚本化返回事件、记录发送内容
 # ==========================================
 class FakeWebSocket:
-    def __init__(self, events: list):
-        self._events = [json.dumps(e, ensure_ascii=False) for e in events]
+    def __init__(self, events: list, clock=None):
+        self._events = [dict(e) for e in events]
+        self._clock = clock
         self.sent = []
         self.closed = False
 
@@ -24,16 +25,34 @@ class FakeWebSocket:
     async def __anext__(self) -> str:
         if not self._events:
             raise StopAsyncIteration
-        return self._events.pop(0)
+        event = self._events.pop(0)
+        # _at 为测试用时间戳：弹出前把假时钟拨到该时刻
+        if self._clock is not None and "_at" in event:
+            self._clock.now = event.pop("_at")
+        return json.dumps(event, ensure_ascii=False)
 
     async def close(self) -> None:
         self.closed = True
 
 
 # ==========================================
+# 可手动推进的假时钟：窗口掐音测试用
+# ==========================================
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def advance(self, seconds):
+        self.now += seconds
+
+    def __call__(self):
+        return self.now
+
+
+# ==========================================
 # 创建桥接实例的测试工厂
 # ==========================================
-def make_bridge(fake_ws, url_holder, header_holder, received, finals):
+def make_bridge(fake_ws, url_holder, header_holder, received, finals, clock=None):
     async def ws_factory(url, headers):
         url_holder.append(url)
         header_holder.append(headers)
@@ -50,6 +69,7 @@ def make_bridge(fake_ws, url_holder, header_holder, received, finals):
         on_final_transcript=on_final_transcript,
         api_key="sk-test",
         ws_factory=ws_factory,
+        clock=clock,
     )
 
 
@@ -185,122 +205,160 @@ async def test_send_audio():
 
 
 # ==========================================
-# 测试板书回合：[text]: 前缀 → 丢弃音频、发 interrupt、板报增量去前缀
+# 测试混合回合：段外字幕、段内黑板、黑板窗口音频被丢弃
+# 时间线：文本 0.1/0.2，音频 1.0/1.5（lead=0.9）
+# 黑板窗口文本时间 [0.1, 0.2] → 音频时间 [1.0, 1.1] 被掐
 # ==========================================
-async def test_board_turn_discards_audio():
+async def test_mixed_turn_segments_and_audio_window():
+    clock = FakeClock()
     fake_ws = FakeWebSocket([
-        {"type": "response.audio_transcript.delta", "delta": "[text"},
-        {"type": "response.audio_transcript.delta", "delta": "]:"},
-        {"type": "response.audio_transcript.delta", "delta": "勾股定理"},
-        {"type": "response.audio.delta", "delta": "QUJD"},
-        {"type": "response.done"},
-    ])
+        {"type": "response.created", "_at": 0.0},
+        {"type": "response.audio_transcript.delta", "delta": "好，大家看黑板。[start]勾股定理", "_at": 0.1},
+        {"type": "response.audio_transcript.delta", "delta": "[end]大家多练习。", "_at": 0.2},
+        {"type": "response.audio.delta", "delta": "QUJD", "_at": 1.0},
+        {"type": "response.audio.delta", "delta": "QUJE", "_at": 1.5},
+        {"type": "response.done", "_at": 3.0},
+    ], clock=clock)
     urls, headers, received, finals = [], [], [], []
-    bridge = make_bridge(fake_ws, urls, headers, received, finals)
+    bridge = make_bridge(fake_ws, urls, headers, received, finals, clock=clock)
+    await bridge.connect("", "audio_text")
+    await bridge.wait_recv_done()
+
+    deltas = [m["delta"] for m in received if m["type"] == "transcript" and m["role"] == "assistant"]
+    assert "".join(deltas) == "好，大家看黑板。大家多练习。"
+    boards = [m for m in received if m["type"] == "board"]
+    assert "".join(b["delta"] for b in boards) == "勾股定理"
+    assert boards[0].get("new_segment") is True
+    # 窗口内音频 QUJD 丢弃，窗口外 QUJE 转发
+    audios = [m["data"] for m in received if m["type"] == "audio"]
+    assert audios == ["QUJE"]
+    assert finals == [("assistant", "好，大家看黑板。[start]勾股定理[end]大家多练习。")]
+    await bridge.close()
+
+
+# ==========================================
+# 测试标记跨 delta 切分不泄漏碎片到字幕
+# ==========================================
+async def test_marker_split_across_deltas():
+    clock = FakeClock()
+    fake_ws = FakeWebSocket([
+        {"type": "response.audio_transcript.delta", "delta": "看黑板。[st", "_at": 0.1},
+        {"type": "response.audio_transcript.delta", "delta": "art]公式", "_at": 0.2},
+        {"type": "response.audio_transcript.delta", "delta": "[e", "_at": 0.3},
+        {"type": "response.audio_transcript.delta", "delta": "nd]继续。", "_at": 0.4},
+        {"type": "response.done", "_at": 1.0},
+    ], clock=clock)
+    urls, headers, received, finals = [], [], [], []
+    bridge = make_bridge(fake_ws, urls, headers, received, finals, clock=clock)
+    await bridge.connect("", "audio_text")
+    await bridge.wait_recv_done()
+    deltas = [m["delta"] for m in received if m["type"] == "transcript" and m["role"] == "assistant"]
+    assert "".join(deltas) == "看黑板。继续。"
+    assert not any("[st" in d or "art]" in d for d in deltas)
+    board = "".join(m["delta"] for m in received if m["type"] == "board")
+    assert board == "公式"
+    await bridge.close()
+
+
+# ==========================================
+# 测试多个黑板段各自带 new_segment 标记
+# ==========================================
+async def test_multiple_board_segments_flags():
+    clock = FakeClock()
+    fake_ws = FakeWebSocket([
+        {"type": "response.audio_transcript.delta", "delta": "[start]一[end]讲。[start]二[end]", "_at": 0.1},
+        {"type": "response.done", "_at": 1.0},
+    ], clock=clock)
+    urls, headers, received, finals = [], [], [], []
+    bridge = make_bridge(fake_ws, urls, headers, received, finals, clock=clock)
+    await bridge.connect("", "audio_text")
+    await bridge.wait_recv_done()
+    boards = [m for m in received if m["type"] == "board"]
+    assert [b["delta"] for b in boards] == ["一", "二"]
+    assert all(b.get("new_segment") is True for b in boards)
+    await bridge.close()
+
+
+# ==========================================
+# 测试未闭合 [end]：后续音频全部丢弃（黑板读到完）
+# ==========================================
+async def test_unclosed_end_discards_tail_audio():
+    clock = FakeClock()
+    fake_ws = FakeWebSocket([
+        {"type": "response.audio_transcript.delta", "delta": "讲。[start]公式", "_at": 0.1},
+        {"type": "response.audio.delta", "delta": "QUJD", "_at": 1.0},
+        {"type": "response.audio.delta", "delta": "QUJE", "_at": 2.0},
+        {"type": "response.done", "_at": 3.0},
+    ], clock=clock)
+    urls, headers, received, finals = [], [], [], []
+    bridge = make_bridge(fake_ws, urls, headers, received, finals, clock=clock)
     await bridge.connect("", "audio_text")
     await bridge.wait_recv_done()
     assert not any(m["type"] == "audio" for m in received)
-    assert sum(1 for m in received if m["type"] == "interrupt") == 1
     board = "".join(m["delta"] for m in received if m["type"] == "board")
-    assert board == "勾股定理"
-    assert not any(m["type"] == "transcript" for m in received)
-    assert finals == [("assistant", "[text]:勾股定理")]
+    assert board == "公式"
     await bridge.close()
 
 
 # ==========================================
-# 测试板书判定前的增量被暂存，不发字幕也不泄漏
+# 测试回合结束时未决的标记碎片按字幕补发
 # ==========================================
-async def test_board_prefix_deltas_held():
+async def test_trailing_fragment_flushed_on_done():
+    clock = FakeClock()
     fake_ws = FakeWebSocket([
-        {"type": "response.audio_transcript.delta", "delta": "[text"},
-        {"type": "response.audio_transcript.delta", "delta": "]:"},
-        {"type": "response.audio_transcript.delta", "delta": "abc"},
-        {"type": "response.done"},
-    ])
+        {"type": "response.audio_transcript.delta", "delta": "你好[st", "_at": 0.1},
+        {"type": "response.done", "_at": 1.0},
+    ], clock=clock)
     urls, headers, received, finals = [], [], [], []
-    bridge = make_bridge(fake_ws, urls, headers, received, finals)
-    await bridge.connect("", "audio_text")
-    # 只处理前两个增量（尚处判定暂存期）
-    # wait_recv_done 会处理完全部事件，这里检查最终无字幕泄漏即可
-    await bridge.wait_recv_done()
-    assert not any(m["type"] == "transcript" for m in received)
-    await bridge.close()
-
-
-# ==========================================
-# 测试暂存增量在判定为普通回合后按序补发
-# ==========================================
-async def test_held_deltas_flushed_when_not_board():
-    fake_ws = FakeWebSocket([
-        {"type": "response.audio_transcript.delta", "delta": "["},
-        {"type": "response.audio_transcript.delta", "delta": "t"},
-        {"type": "response.audio_transcript.delta", "delta": "你好"},
-        {"type": "response.done"},
-    ])
-    urls, headers, received, finals = [], [], [], []
-    bridge = make_bridge(fake_ws, urls, headers, received, finals)
+    bridge = make_bridge(fake_ws, urls, headers, received, finals, clock=clock)
     await bridge.connect("", "audio_text")
     await bridge.wait_recv_done()
     deltas = [m["delta"] for m in received if m["type"] == "transcript" and m["role"] == "assistant"]
-    assert deltas == ["[", "t", "你好"]
-    assert finals == [("assistant", "[t你好")]
+    assert "".join(deltas) == "你好[st"
     await bridge.close()
 
 
 # ==========================================
-# 测试板书模式在 response.done 后复位，下一回合恢复正常
+# 测试普通回合（无标记）行为不变：字幕与音频全转发
 # ==========================================
-async def test_board_mode_resets_after_done():
+async def test_normal_turn_unchanged():
+    clock = FakeClock()
     fake_ws = FakeWebSocket([
-        {"type": "response.audio_transcript.delta", "delta": "[text]:abc"},
-        {"type": "response.done"},
-        {"type": "response.audio_transcript.delta", "delta": "你好"},
-        {"type": "response.audio.delta", "delta": "QUJD"},
-        {"type": "response.done"},
-    ])
+        {"type": "response.audio_transcript.delta", "delta": "Bonjour", "_at": 0.1},
+        {"type": "response.audio.delta", "delta": "QUJD", "_at": 1.0},
+        {"type": "response.done", "_at": 2.0},
+    ], clock=clock)
     urls, headers, received, finals = [], [], [], []
-    bridge = make_bridge(fake_ws, urls, headers, received, finals)
+    bridge = make_bridge(fake_ws, urls, headers, received, finals, clock=clock)
+    await bridge.connect("", "audio_text")
+    await bridge.wait_recv_done()
+    deltas = [m["delta"] for m in received if m["type"] == "transcript" and m["role"] == "assistant"]
+    assert deltas == ["Bonjour"]
+    assert [m["data"] for m in received if m["type"] == "audio"] == ["QUJD"]
+    assert not any(m["type"] == "board" for m in received)
+    await bridge.close()
+
+
+# ==========================================
+# 测试段状态在下一回合复位
+# ==========================================
+async def test_segment_state_resets_next_turn():
+    clock = FakeClock()
+    fake_ws = FakeWebSocket([
+        {"type": "response.created", "_at": 0.0},
+        {"type": "response.audio_transcript.delta", "delta": "[start]公式[end]", "_at": 0.1},
+        {"type": "response.done", "_at": 1.0},
+        {"type": "response.created", "_at": 2.0},
+        {"type": "response.audio_transcript.delta", "delta": "你好", "_at": 2.1},
+        {"type": "response.audio.delta", "delta": "QUJD", "_at": 3.0},
+        {"type": "response.done", "_at": 4.0},
+    ], clock=clock)
+    urls, headers, received, finals = [], [], [], []
+    bridge = make_bridge(fake_ws, urls, headers, received, finals, clock=clock)
     await bridge.connect("", "audio_text")
     await bridge.wait_recv_done()
     board = "".join(m["delta"] for m in received if m["type"] == "board")
-    assert board == "abc"
-    assert {"type": "audio", "data": "QUJD"} in received
+    assert board == "公式"
     assert any(m["type"] == "transcript" and m["delta"] == "你好" for m in received)
-    assert finals == [("assistant", "[text]:abc"), ("assistant", "你好")]
-    await bridge.close()
-
-
-# ==========================================
-# 测试回合结束时仍有暂存内容（极短回复）则补发为字幕
-# ==========================================
-async def test_pending_flushed_on_response_done():
-    fake_ws = FakeWebSocket([
-        {"type": "response.audio_transcript.delta", "delta": "[t"},
-        {"type": "response.done"},
-    ])
-    urls, headers, received, finals = [], [], [], []
-    bridge = make_bridge(fake_ws, urls, headers, received, finals)
-    await bridge.connect("", "audio_text")
-    await bridge.wait_recv_done()
-    deltas = [m["delta"] for m in received if m["type"] == "transcript" and m["role"] == "assistant"]
-    assert deltas == ["[t"]
-    await bridge.close()
-
-
-# ==========================================
-# 测试单个增量整体到达（含前导空白）也能识别板书
-# ==========================================
-async def test_board_single_delta_with_leading_space():
-    fake_ws = FakeWebSocket([
-        {"type": "response.audio_transcript.delta", "delta": " [text]:第一行\n第二行"},
-        {"type": "response.done"},
-    ])
-    urls, headers, received, finals = [], [], [], []
-    bridge = make_bridge(fake_ws, urls, headers, received, finals)
-    await bridge.connect("", "audio_text")
-    await bridge.wait_recv_done()
-    board = "".join(m["delta"] for m in received if m["type"] == "board")
-    assert board == "第一行\n第二行"
-    assert not any(m["type"] == "transcript" for m in received)
+    assert [m["data"] for m in received if m["type"] == "audio"] == ["QUJD"]
     await bridge.close()

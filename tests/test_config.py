@@ -56,7 +56,8 @@ def test_get_api_key_present(monkeypatch):
 
 
 # ==========================================
-# 测试板书固定指令包含 [text]: 标记约定
+# 测试板书固定指令包含 [start]/[end] 标记约定
 # ==========================================
 def test_board_prompt_marker():
-    assert "[text]:" in config.BOARD_PROMPT
+    assert "[start]" in config.BOARD_PROMPT
+    assert "[end]" in config.BOARD_PROMPT
