@@ -11,6 +11,7 @@ const state = {
     talking: false,
     subtitleOn: true,
     currentAssistantBubble: null,
+    levelTimer: null,
 };
 
 window.AUDIO_CONFIG = { input_sample_rate: 16000, output_sample_rate: 24000 };
@@ -92,6 +93,30 @@ function setStatus(value) {
     const text = document.getElementById('status-text');
     dot.className = `status-dot ${value}`;
     text.textContent = STATUS_TEXT[value] || value;
+}
+
+// ==========================================
+// 麦克风电平表：定时读取输入电平并显示
+// 说话时条纹跳动 = 真的采到了声音
+// ==========================================
+function startLevelMeter() {
+    const wrap = document.getElementById('mic-level');
+    const bar = document.getElementById('mic-level-bar');
+    wrap.classList.remove('hidden');
+    clearInterval(state.levelTimer);
+    state.levelTimer = setInterval(() => {
+        const level = AudioIO.getInputLevel();
+        // RMS 0~1，放大后映射到 0~100%
+        const pct = Math.min(100, Math.round(level * 320));
+        bar.style.width = pct + '%';
+    }, 100);
+}
+
+function stopLevelMeter() {
+    clearInterval(state.levelTimer);
+    state.levelTimer = null;
+    document.getElementById('mic-level').classList.add('hidden');
+    document.getElementById('mic-level-bar').style.width = '0';
 }
 
 // ==========================================
@@ -211,6 +236,7 @@ async function startTalk() {
     state.talking = true;
     updateTalkButton();
     setStatus('listening');
+    startLevelMeter();
     // WebSocket 可能仍在握手，等待打开后再发 start
     const waitOpen = () => new Promise((resolve) => {
         if (state.ws.readyState === WebSocket.OPEN) {
@@ -225,6 +251,7 @@ async function startTalk() {
 
 function stopTalk() {
     state.talking = false;
+    stopLevelMeter();
     AudioIO.stopCapture();
     AudioIO.interrupt();
     sendWs({ type: 'stop' });

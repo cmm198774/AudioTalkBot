@@ -125,6 +125,34 @@ body {
     font-size: 13px;
 }
 
+/* ---- 麦克风电平表（说话时应跳动，证明真的采到声音） ---- */
+.mic-level {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: 8px;
+}
+
+.mic-level-label {
+    font-size: 13px;
+}
+
+.mic-level-track {
+    width: 90px;
+    height: 8px;
+    border-radius: 4px;
+    background: #2a2e36;
+    overflow: hidden;
+}
+
+#mic-level-bar {
+    height: 100%;
+    width: 0;
+    border-radius: 4px;
+    background: linear-gradient(90deg, #4caf50, #8bc34a);
+    transition: width 0.08s linear;
+}
+
 .transcript {
     flex: 1;
     overflow-y: auto;

@@ -41,12 +41,33 @@ const AudioIO = {
                 this.onChunk(arrayBufferToBase64(e.data.pcm));
             }
         };
+        // 分析节点：实时读取输入电平，供界面显示麦克风是否真的采到声音
+        this.analyser = this.audioCtx.createAnalyser();
+        this.analyser.fftSize = 512;
         // 经零增益节点挂到输出，保证 worklet 被调度但不发声
         const silent = this.audioCtx.createGain();
         silent.gain.value = 0;
         source.connect(this.workletNode);
+        source.connect(this.analyser);
         this.workletNode.connect(silent);
         silent.connect(this.audioCtx.destination);
+    },
+
+    // ==========================================
+    // 读取当前麦克风输入电平（RMS，0~1）
+    // ==========================================
+    getInputLevel() {
+        if (!this.analyser) {
+            return 0;
+        }
+        const data = new Uint8Array(this.analyser.fftSize);
+        this.analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) {
+            const v = (data[i] - 128) / 128;
+            sum += v * v;
+        }
+        return Math.sqrt(sum / data.length);
     },
 
     // ==========================================
@@ -57,6 +78,10 @@ const AudioIO = {
             this.workletNode.disconnect();
             this.workletNode.port.onmessage = null;
             this.workletNode = null;
+        }
+        if (this.analyser) {
+            this.analyser.disconnect();
+            this.analyser = null;
         }
         if (this.mediaStream) {
             this.mediaStream.getTracks().forEach((t) => t.stop());
