@@ -56,6 +56,9 @@ def test_build_history_events():
     assert first["item"]["role"] == "user"
     assert first["item"]["content"] == [{"type": "input_text", "text": "你好"}]
     assert events[1]["item"]["role"] == "assistant"
+    # 协议要求助手消息用 output_text，否则服务端报
+    # "assistant role only supports content type 'output_text'"
+    assert events[1]["item"]["content"] == [{"type": "output_text", "text": "Bonjour"}]
 
 
 # ==========================================

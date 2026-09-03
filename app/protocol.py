@@ -56,12 +56,14 @@ def build_history_item(role: str, text: str) -> dict:
     Returns:
         dict: conversation.item.create 事件 JSON
     """
+    # 协议要求：助手消息内容类型为 output_text，用户消息为 input_text
+    content_type = "output_text" if role == "assistant" else "input_text"
     return {
         "type": "conversation.item.create",
         "item": {
             "type": "message",
             "role": role,
-            "content": [{"type": "input_text", "text": text}],
+            "content": [{"type": content_type, "text": text}],
         },
     }
 
