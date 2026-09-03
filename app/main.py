@@ -5,12 +5,13 @@
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app import storage
+from app.bridge import RealtimeBridge
 from app.config import INPUT_SAMPLE_RATE, MODEL_NAME, OUTPUT_SAMPLE_RATE, get_api_key
 
 logging.basicConfig(
@@ -196,3 +197,108 @@ async def delete_preset(preset_id: str):
     """
     if not storage.delete_preset(preset_id):
         raise HTTPException(status_code=404, detail="预设不存在")
+
+
+# ==========================================
+# 桥接类注入点（测试用假实现替换）
+# ==========================================
+BRIDGE_CLASS = RealtimeBridge
+
+
+# ==========================================
+# 对话 WebSocket 端点
+# ==========================================
+@app.websocket("/ws/chat")
+async def ws_chat(ws: WebSocket):
+    """
+    对话主通道：一个浏览器连接对应一个活动会话。
+    前端消息：start / audio / update_settings / stop
+    Args:
+        ws: FastAPI WebSocket 连接
+    """
+    await ws.accept()
+    bridge = None
+    state = {"session_id": None}
+
+    async def send_to_client(msg: dict) -> None:
+        """
+        把消息推送给浏览器。
+        Args:
+            msg: 前端消息字典 (dict)
+        """
+        await ws.send_json(msg)
+
+    async def on_final_transcript(role: str, text: str) -> None:
+        """
+        最终转写落盘；首句用户发言自动命名会话。
+        Args:
+            role: user 或 assistant (str)
+            text: 转写文本 (str)
+        """
+        session_id = state["session_id"]
+        if not session_id:
+            return
+        storage.append_transcript(session_id, role, text)
+        if role == "user":
+            session = storage.get_session(session_id)
+            if session is not None and session["title"] == "新对话":
+                title = text.strip()[:20] or "新对话"
+                storage.update_session(session_id, title=title)
+                await send_to_client({"type": "title", "value": title})
+
+    try:
+        while True:
+            msg = await ws.receive_json()
+            mtype = msg.get("type")
+            if mtype == "start":
+                if bridge is not None:
+                    await bridge.close()
+                session_id = msg.get("session_id")
+                session = storage.get_session(session_id) if session_id else None
+                if session is None:
+                    await send_to_client({"type": "error", "message": "会话不存在"})
+                    continue
+                state["session_id"] = session_id
+                bridge = BRIDGE_CLASS(
+                    send_to_client=send_to_client,
+                    on_final_transcript=on_final_transcript,
+                )
+                try:
+                    await bridge.connect(
+                        instructions=session["system_prompt"],
+                        output_mode=session["output_mode"],
+                        history=session["transcript"],
+                    )
+                except Exception as exc:
+                    logger.warning("连接 DashScope 失败: %s", exc)
+                    await bridge.close()
+                    bridge = None
+                    state["session_id"] = None
+                    await send_to_client({"type": "error", "message": f"连接失败：{exc}"})
+            elif mtype == "audio":
+                if bridge is not None:
+                    await bridge.send_audio(msg.get("data", ""))
+            elif mtype == "update_settings":
+                session_id = state["session_id"]
+                system_prompt = msg.get("system_prompt")
+                output_mode = msg.get("output_mode")
+                if session_id:
+                    fields = {}
+                    if system_prompt is not None:
+                        fields["system_prompt"] = system_prompt
+                    if output_mode is not None:
+                        fields["output_mode"] = output_mode
+                    if fields:
+                        storage.update_session(session_id, **fields)
+                if bridge is not None:
+                    await bridge.update_session(system_prompt or "", output_mode or "audio_text")
+            elif mtype == "stop":
+                if bridge is not None:
+                    await bridge.close()
+                    bridge = None
+                state["session_id"] = None
+    except WebSocketDisconnect:
+        logger.info("前端 WebSocket 断开")
+    finally:
+        if bridge is not None:
+            await bridge.close()
