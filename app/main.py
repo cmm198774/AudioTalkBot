@@ -12,7 +12,13 @@ from pydantic import BaseModel
 
 from app import storage
 from app.bridge import RealtimeBridge
-from app.config import INPUT_SAMPLE_RATE, MODEL_NAME, OUTPUT_SAMPLE_RATE, get_api_key
+from app.config import (
+    BOARD_PROMPT,
+    INPUT_SAMPLE_RATE,
+    MODEL_NAME,
+    OUTPUT_SAMPLE_RATE,
+    get_api_key,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -206,6 +212,20 @@ BRIDGE_CLASS = RealtimeBridge
 
 
 # ==========================================
+# 拼接下发给模型的完整指令：用户人设 + 固定板书指令
+# ==========================================
+def compose_instructions(persona: str) -> str:
+    """
+    板书指令固定在用户人设之后，人设编辑不受影响。
+    Args:
+        persona: 用户设置的 system prompt (str)
+    Returns:
+        str: 完整 instructions
+    """
+    return (persona or "") + BOARD_PROMPT
+
+
+# ==========================================
 # 对话 WebSocket 端点
 # ==========================================
 @app.websocket("/ws/chat")
@@ -265,7 +285,7 @@ async def ws_chat(ws: WebSocket):
                 )
                 try:
                     await bridge.connect(
-                        instructions=session["system_prompt"],
+                        instructions=compose_instructions(session["system_prompt"]),
                         output_mode=session["output_mode"],
                         history=session["transcript"],
                     )
@@ -282,16 +302,22 @@ async def ws_chat(ws: WebSocket):
                 session_id = state["session_id"]
                 system_prompt = msg.get("system_prompt")
                 output_mode = msg.get("output_mode")
-                if session_id:
+                session = storage.get_session(session_id) if session_id else None
+                if session is not None:
                     fields = {}
                     if system_prompt is not None:
                         fields["system_prompt"] = system_prompt
                     if output_mode is not None:
                         fields["output_mode"] = output_mode
                     if fields:
-                        storage.update_session(session_id, **fields)
-                if bridge is not None:
-                    await bridge.update_session(system_prompt or "", output_mode or "audio_text")
+                        session = storage.update_session(session_id, **fields)
+                # 回读存储的会话，缺省字段不会被清空（修复只改输出模式
+                # 时清空人设的问题）；板书指令固定拼接在人设之后
+                if bridge is not None and session is not None:
+                    await bridge.update_session(
+                        compose_instructions(session["system_prompt"]),
+                        session["output_mode"],
+                    )
             elif mtype == "stop":
                 if bridge is not None:
                     await bridge.close()

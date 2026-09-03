@@ -182,3 +182,125 @@ async def test_send_audio():
     await bridge.send_audio("QUJD")
     assert {"type": "input_audio_buffer.append", "audio": "QUJD"} in fake_ws.sent
     await bridge.close()
+
+
+# ==========================================
+# 测试板书回合：[text]: 前缀 → 丢弃音频、发 interrupt、板报增量去前缀
+# ==========================================
+async def test_board_turn_discards_audio():
+    fake_ws = FakeWebSocket([
+        {"type": "response.audio_transcript.delta", "delta": "[text"},
+        {"type": "response.audio_transcript.delta", "delta": "]:"},
+        {"type": "response.audio_transcript.delta", "delta": "勾股定理"},
+        {"type": "response.audio.delta", "delta": "QUJD"},
+        {"type": "response.done"},
+    ])
+    urls, headers, received, finals = [], [], [], []
+    bridge = make_bridge(fake_ws, urls, headers, received, finals)
+    await bridge.connect("", "audio_text")
+    await bridge.wait_recv_done()
+    assert not any(m["type"] == "audio" for m in received)
+    assert sum(1 for m in received if m["type"] == "interrupt") == 1
+    board = "".join(m["delta"] for m in received if m["type"] == "board")
+    assert board == "勾股定理"
+    assert not any(m["type"] == "transcript" for m in received)
+    assert finals == [("assistant", "[text]:勾股定理")]
+    await bridge.close()
+
+
+# ==========================================
+# 测试板书判定前的增量被暂存，不发字幕也不泄漏
+# ==========================================
+async def test_board_prefix_deltas_held():
+    fake_ws = FakeWebSocket([
+        {"type": "response.audio_transcript.delta", "delta": "[text"},
+        {"type": "response.audio_transcript.delta", "delta": "]:"},
+        {"type": "response.audio_transcript.delta", "delta": "abc"},
+        {"type": "response.done"},
+    ])
+    urls, headers, received, finals = [], [], [], []
+    bridge = make_bridge(fake_ws, urls, headers, received, finals)
+    await bridge.connect("", "audio_text")
+    # 只处理前两个增量（尚处判定暂存期）
+    # wait_recv_done 会处理完全部事件，这里检查最终无字幕泄漏即可
+    await bridge.wait_recv_done()
+    assert not any(m["type"] == "transcript" for m in received)
+    await bridge.close()
+
+
+# ==========================================
+# 测试暂存增量在判定为普通回合后按序补发
+# ==========================================
+async def test_held_deltas_flushed_when_not_board():
+    fake_ws = FakeWebSocket([
+        {"type": "response.audio_transcript.delta", "delta": "["},
+        {"type": "response.audio_transcript.delta", "delta": "t"},
+        {"type": "response.audio_transcript.delta", "delta": "你好"},
+        {"type": "response.done"},
+    ])
+    urls, headers, received, finals = [], [], [], []
+    bridge = make_bridge(fake_ws, urls, headers, received, finals)
+    await bridge.connect("", "audio_text")
+    await bridge.wait_recv_done()
+    deltas = [m["delta"] for m in received if m["type"] == "transcript" and m["role"] == "assistant"]
+    assert deltas == ["[", "t", "你好"]
+    assert finals == [("assistant", "[t你好")]
+    await bridge.close()
+
+
+# ==========================================
+# 测试板书模式在 response.done 后复位，下一回合恢复正常
+# ==========================================
+async def test_board_mode_resets_after_done():
+    fake_ws = FakeWebSocket([
+        {"type": "response.audio_transcript.delta", "delta": "[text]:abc"},
+        {"type": "response.done"},
+        {"type": "response.audio_transcript.delta", "delta": "你好"},
+        {"type": "response.audio.delta", "delta": "QUJD"},
+        {"type": "response.done"},
+    ])
+    urls, headers, received, finals = [], [], [], []
+    bridge = make_bridge(fake_ws, urls, headers, received, finals)
+    await bridge.connect("", "audio_text")
+    await bridge.wait_recv_done()
+    board = "".join(m["delta"] for m in received if m["type"] == "board")
+    assert board == "abc"
+    assert {"type": "audio", "data": "QUJD"} in received
+    assert any(m["type"] == "transcript" and m["delta"] == "你好" for m in received)
+    assert finals == [("assistant", "[text]:abc"), ("assistant", "你好")]
+    await bridge.close()
+
+
+# ==========================================
+# 测试回合结束时仍有暂存内容（极短回复）则补发为字幕
+# ==========================================
+async def test_pending_flushed_on_response_done():
+    fake_ws = FakeWebSocket([
+        {"type": "response.audio_transcript.delta", "delta": "[t"},
+        {"type": "response.done"},
+    ])
+    urls, headers, received, finals = [], [], [], []
+    bridge = make_bridge(fake_ws, urls, headers, received, finals)
+    await bridge.connect("", "audio_text")
+    await bridge.wait_recv_done()
+    deltas = [m["delta"] for m in received if m["type"] == "transcript" and m["role"] == "assistant"]
+    assert deltas == ["[t"]
+    await bridge.close()
+
+
+# ==========================================
+# 测试单个增量整体到达（含前导空白）也能识别板书
+# ==========================================
+async def test_board_single_delta_with_leading_space():
+    fake_ws = FakeWebSocket([
+        {"type": "response.audio_transcript.delta", "delta": " [text]:第一行\n第二行"},
+        {"type": "response.done"},
+    ])
+    urls, headers, received, finals = [], [], [], []
+    bridge = make_bridge(fake_ws, urls, headers, received, finals)
+    await bridge.connect("", "audio_text")
+    await bridge.wait_recv_done()
+    board = "".join(m["delta"] for m in received if m["type"] == "board")
+    assert board == "第一行\n第二行"
+    assert not any(m["type"] == "transcript" for m in received)
+    await bridge.close()

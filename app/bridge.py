@@ -16,6 +16,9 @@ from app.protocol import build_audio_append, build_history_events, build_session
 
 logger = logging.getLogger(__name__)
 
+# 板书回合标记：模型以该前缀开头的回复视为板书，内容上黑板、语音掐断
+_BOARD_MARKER = "[text]:"
+
 # 已知但无需处理的服务端事件类型
 _IGNORED_EVENTS = (
     "session.created",
@@ -73,6 +76,10 @@ class RealtimeBridge:
         self._recv_task = None
         self._assistant_text = ""
         self._speaking = False
+        # 板书回合检测状态（按回合复位）
+        self._board_mode = False
+        self._board_decided = False
+        self._pending_deltas = []
 
     # ==========================================
     # 默认 WebSocket 工厂（生产路径）
@@ -222,6 +229,9 @@ class RealtimeBridge:
             await self._emit({"type": "interrupt"})
             await self._emit({"type": "state", "value": "listening"})
         elif etype == "response.created":
+            self._board_mode = False
+            self._board_decided = False
+            self._pending_deltas = []
             await self._emit({"type": "state", "value": "thinking"})
         elif etype == "response.done":
             await self._handle_response_done()
@@ -240,10 +250,12 @@ class RealtimeBridge:
     # ==========================================
     async def _handle_audio_delta(self, event: dict) -> None:
         """
-        转发音频增量，首次到达时切换 speaking 状态。
+        转发音频增量，首次到达时切换 speaking 状态；板书回合直接丢弃。
         Args:
             event: response.audio.delta 事件 (dict)
         """
+        if self._board_mode:
+            return
         delta = event.get("delta", "")
         if not delta:
             return
@@ -257,7 +269,8 @@ class RealtimeBridge:
     # ==========================================
     async def _handle_transcript_delta(self, event: dict) -> None:
         """
-        转发字幕增量并累积到当前回合缓冲。
+        转发字幕增量并累积到当前回合缓冲；同时判定是否为板书回合。
+        未判定前增量先暂存，避免字幕漏出 [tex… 碎片。
         Args:
             event: 字幕/文本增量事件 (dict)
         """
@@ -265,16 +278,70 @@ class RealtimeBridge:
         if not delta:
             return
         self._assistant_text += delta
-        await self._emit({"type": "transcript", "role": "assistant", "delta": delta, "final": False})
+
+        # 已判定为板书回合：增量全部路由到黑板
+        if self._board_mode:
+            await self._emit({"type": "board", "delta": delta})
+            return
+
+        # 已判定为普通回合：正常转发字幕
+        if self._board_decided:
+            await self._emit({"type": "transcript", "role": "assistant", "delta": delta, "final": False})
+            return
+
+        # 未判定：暂存增量，用累积文本（忽略前导空白）比对板书标记
+        self._pending_deltas.append(delta)
+        acc = self._assistant_text.lstrip()
+        if acc.startswith(_BOARD_MARKER):
+            await self._enter_board_mode()
+            return
+        if not _BOARD_MARKER.startswith(acc):
+            await self._decide_normal_turn()
+
+    # ==========================================
+    # 内部：确认进入板书回合
+    # ==========================================
+    async def _enter_board_mode(self) -> None:
+        """
+        掐断本回合语音并把暂存增量（去掉标记）送上黑板。
+        """
+        self._board_mode = True
+        self._board_decided = True
+        # 清空前端可能已排队的音频（双保险）
+        await self._emit({"type": "interrupt"})
+        full = "".join(self._pending_deltas)
+        self._pending_deltas = []
+        stripped = full.lstrip()[len(_BOARD_MARKER):]
+        if stripped:
+            await self._emit({"type": "board", "delta": stripped})
+
+    # ==========================================
+    # 内部：确认为普通回合并补发暂存增量
+    # ==========================================
+    async def _decide_normal_turn(self) -> None:
+        """
+        把判定期暂存的增量按序补发为字幕。
+        """
+        self._board_decided = True
+        for held in self._pending_deltas:
+            await self._emit({"type": "transcript", "role": "assistant", "delta": held, "final": False})
+        self._pending_deltas = []
 
     # ==========================================
     # 内部：回合结束
     # ==========================================
     async def _handle_response_done(self) -> None:
         """
-        回合结束：持久化累积的助手回复（含被打断时的部分回复），复位状态。
+        回合结束：补发未判定的暂存增量，持久化累积的助手回复（板书回合含
+        [text]: 原文），复位回合状态。
         """
         self._speaking = False
+        if not self._board_decided and self._pending_deltas:
+            for held in self._pending_deltas:
+                await self._emit({"type": "transcript", "role": "assistant", "delta": held, "final": False})
+        self._pending_deltas = []
+        self._board_decided = False
+        self._board_mode = False
         if self._assistant_text and self._on_final_transcript is not None:
             await self._on_final_transcript("assistant", self._assistant_text)
         self._assistant_text = ""

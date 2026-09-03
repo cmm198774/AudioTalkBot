@@ -57,6 +57,17 @@ OUTPUT_MODE_MODALITIES = {
     "audio_text": ["text", "audio"],
 }
 
+# ---- 板书功能固定指令（拼接在用户人设之后，用户不可见不可改）----
+# 模型需要呈现板书时，单独输出以 [text]: 开头的一段内容，
+# 前端据此把内容送上小黑板并掐断该回合语音。
+BOARD_PROMPT = (
+    "\n\n【板书功能】当你需要呈现板书内容时，"
+    "单独输出一段以 [text]: 开头的内容，"
+    "例如 [text]:勾股定理：a² + b² = c²。"
+    "板书内容应提炼为简洁、结构化的要点，可用换行分条；"
+    "普通对话回复不要包含 [text]: 标记。"
+)
+
 # ---- 数据持久化路径 ----
 DATA_DIR = BASE_DIR / "data"
 SESSIONS_FILE = DATA_DIR / "sessions.json"

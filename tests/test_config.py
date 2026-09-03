@@ -53,3 +53,10 @@ def test_get_api_key_missing(monkeypatch):
 def test_get_api_key_present(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test-123")
     assert config.get_api_key() == "sk-test-123"
+
+
+# ==========================================
+# 测试板书固定指令包含 [text]: 标记约定
+# ==========================================
+def test_board_prompt_marker():
+    assert "[text]:" in config.BOARD_PROMPT

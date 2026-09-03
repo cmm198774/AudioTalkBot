@@ -130,10 +130,14 @@ def test_ws_chat_flow(monkeypatch):
         ws.send_json({"type": "stop"})
 
     bridge = holder["bridge"]
-    assert bridge.connected[0] == "原有提示词"
+    # instructions = 人设 + 固定板书指令
+    assert bridge.connected[0].startswith("原有提示词")
+    assert "[text]:" in bridge.connected[0]
     assert bridge.connected[1] == "audio_text"
     assert bridge.audio == ["QUJD"]
-    assert bridge.updated == ("新提示词", "text")
+    assert bridge.updated[0].startswith("新提示词")
+    assert "[text]:" in bridge.updated[0]
+    assert bridge.updated[1] == "text"
     assert bridge.closed is True
 
     session = client.get(f"/api/sessions/{sid}").json()
@@ -141,6 +145,36 @@ def test_ws_chat_flow(monkeypatch):
     assert session["transcript"][0]["text"] == "你好，这是自动命名测试"
     assert session["system_prompt"] == "新提示词"
     assert session["output_mode"] == "text"
+
+
+# ==========================================
+# 测试只改输出模式时不清空人设（回读会话存储）
+# ==========================================
+def test_ws_chat_update_settings_keeps_persona(monkeypatch):
+    holder = {}
+
+    def fake_bridge_factory(**kwargs):
+        bridge = FakeBridge(**kwargs)
+        holder["bridge"] = bridge
+        return bridge
+
+    monkeypatch.setattr(main, "BRIDGE_CLASS", fake_bridge_factory)
+    client = TestClient(main.app)
+    sid = client.post(
+        "/api/sessions",
+        json={"system_prompt": "原有人设", "output_mode": "audio_text"},
+    ).json()["id"]
+
+    with client.websocket_connect("/ws/chat") as ws:
+        ws.send_json({"type": "start", "session_id": sid})
+        # 只改输出模式，不带 system_prompt
+        ws.send_json({"type": "update_settings", "output_mode": "text"})
+        ws.send_json({"type": "stop"})
+
+    bridge = holder["bridge"]
+    assert bridge.updated[0].startswith("原有人设")
+    assert "[text]:" in bridge.updated[0]
+    assert bridge.updated[1] == "text"
 
 
 # ==========================================
