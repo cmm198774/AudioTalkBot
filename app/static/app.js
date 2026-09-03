@@ -12,6 +12,8 @@ const state = {
     subtitleOn: true,
     currentAssistantBubble: null,
     levelTimer: null,
+    boardOn: true,
+    boardRatio: 0.5,
 };
 
 window.AUDIO_CONFIG = { input_sample_rate: 16000, output_sample_rate: 24000 };
@@ -96,6 +98,99 @@ function setStatus(value) {
 }
 
 // ==========================================
+// 小黑板：追加内容、清空、显隐、比例拖拽
+// ==========================================
+function appendBoard(delta) {
+    const content = document.getElementById('board-content');
+    content.textContent += delta;
+    content.scrollTop = content.scrollHeight;
+}
+
+function clearBoard() {
+    document.getElementById('board-content').textContent = '';
+}
+
+// ==========================================
+// 黑板与聊天区的高度比例：写 localStorage，刷新后恢复
+// 面板按百分比定高，聊天区 flex:1 补齐余量
+// ==========================================
+function applyBoardRatio(ratio) {
+    state.boardRatio = ratio;
+    document.getElementById('board-panel').style.height = (ratio * 100).toFixed(1) + '%';
+    try {
+        localStorage.setItem('boardRatio', String(ratio));
+    } catch (e) {
+        // 隐私模式等场景下 localStorage 不可用，忽略
+    }
+}
+
+function setBoardVisible(visible) {
+    state.boardOn = visible;
+    document.getElementById('board-panel').classList.toggle('hidden', !visible);
+    document.getElementById('board-divider').classList.toggle('hidden', !visible);
+    document.getElementById('board-toggle-btn').classList.toggle('active', visible);
+    try {
+        localStorage.setItem('boardOn', visible ? '1' : '0');
+    } catch (e) {
+        // 忽略
+    }
+}
+
+// ==========================================
+// 分割线拖拽：按住上下拖动调整两区比例（限制 15%~85%）
+// ==========================================
+function bindBoardDivider() {
+    const divider = document.getElementById('board-divider');
+    divider.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        divider.classList.add('dragging');
+        document.body.classList.add('dragging-board');
+        const rect = document.querySelector('.work-area').getBoundingClientRect();
+
+        const onMove = (ev) => {
+            if (rect.height <= 0) {
+                return;
+            }
+            let ratio = (ev.clientY - rect.top) / rect.height;
+            ratio = Math.min(0.85, Math.max(0.15, ratio));
+            applyBoardRatio(ratio);
+        };
+        const onUp = () => {
+            divider.classList.remove('dragging');
+            document.body.classList.remove('dragging-board');
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+    });
+}
+
+// ==========================================
+// 黑板初始化：恢复比例与显隐偏好
+// ==========================================
+function initBoard() {
+    let ratio = 0.5;
+    try {
+        const saved = parseFloat(localStorage.getItem('boardRatio'));
+        if (saved > 0.1 && saved < 0.9) {
+            ratio = saved;
+        }
+    } catch (e) {
+        // 忽略
+    }
+    applyBoardRatio(ratio);
+    let visible = true;
+    try {
+        visible = localStorage.getItem('boardOn') !== '0';
+    } catch (e) {
+        // 忽略
+    }
+    setBoardVisible(visible);
+    bindBoardDivider();
+}
+
+// ==========================================
 // 麦克风电平表：定时读取输入电平并显示
 // 说话时条纹跳动 = 真的采到了声音
 // ==========================================
@@ -146,6 +241,7 @@ function appendTranscript(role, delta, final) {
 
 // ==========================================
 // 从历史记录渲染字幕（切换会话时）
+// 助手消息以 [text]: 开头的是板书，渲染为黑板样式气泡
 // ==========================================
 function renderTranscriptHistory(transcript) {
     const box = document.getElementById('transcript');
@@ -153,8 +249,13 @@ function renderTranscriptHistory(transcript) {
     state.currentAssistantBubble = null;
     for (const item of transcript) {
         const bubble = document.createElement('div');
-        bubble.className = `bubble ${item.role}`;
-        bubble.textContent = item.text;
+        if (item.role === 'assistant' && item.text.startsWith('[text]:')) {
+            bubble.className = 'bubble assistant board';
+            bubble.textContent = '📋 ' + item.text.slice('[text]:'.length);
+        } else {
+            bubble.className = `bubble ${item.role}`;
+            bubble.textContent = item.text;
+        }
         box.appendChild(bubble);
     }
     box.scrollTop = box.scrollHeight;
@@ -195,6 +296,9 @@ function handleServerMessage(msg) {
             break;
         case 'transcript':
             appendTranscript(msg.role, msg.delta, !!msg.final);
+            break;
+        case 'board':
+            appendBoard(msg.delta);
             break;
         case 'state':
             setStatus(msg.value);
@@ -252,6 +356,7 @@ async function startTalk() {
 function stopTalk() {
     state.talking = false;
     stopLevelMeter();
+    clearBoard();
     AudioIO.stopCapture();
     AudioIO.interrupt();
     sendWs({ type: 'stop' });
@@ -321,6 +426,7 @@ async function selectSession(sessionId) {
     if (state.talking) {
         stopTalk();
     }
+    clearBoard();
     state.sessionId = sessionId;
     const session = await api(`/api/sessions/${sessionId}`);
     document.getElementById('session-title').textContent = session.title;
@@ -336,6 +442,7 @@ async function deleteSession(sessionId) {
         state.sessionId = null;
         document.getElementById('session-title').textContent = '未选择会话';
         document.getElementById('transcript').innerHTML = '';
+        clearBoard();
     }
     await loadSessions();
 }
@@ -460,6 +567,10 @@ function bindEvents() {
     document.getElementById('subtitle-toggle').addEventListener('change', (e) => {
         state.subtitleOn = e.target.checked;
     });
+    document.getElementById('board-toggle-btn').addEventListener('click', () => {
+        setBoardVisible(!state.boardOn);
+    });
+    document.getElementById('board-clear-btn').addEventListener('click', clearBoard);
     document.querySelectorAll('input[name="output-mode"]').forEach((radio) => {
         radio.addEventListener('change', saveSettings);
     });
@@ -476,6 +587,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         await loadSessions();
         await loadPresets();
         bindEvents();
+        initBoard();
         if (state.sessions.length > 0) {
             await selectSession(state.sessions[0].id);
         }

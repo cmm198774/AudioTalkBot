@@ -30,8 +30,19 @@
                     <span class="mic-level-label">🎤</span>
                     <div class="mic-level-track"><div id="mic-level-bar"></div></div>
                 </div>
+                <button id="board-toggle-btn" class="board-toggle active" title="显示/隐藏小黑板">📋 黑板</button>
             </header>
-            <div id="transcript" class="transcript"></div>
+            <div class="work-area">
+                <div id="board-panel" class="board-panel">
+                    <div class="board-bar">
+                        <span class="board-title">📋 小黑板</span>
+                        <button id="board-clear-btn" class="board-clear" title="擦掉黑板全部内容">清空</button>
+                    </div>
+                    <div id="board-content" class="board-content"></div>
+                </div>
+                <div id="board-divider" class="board-divider" title="按住上下拖动调整黑板与聊天区比例"></div>
+                <div id="transcript" class="transcript"></div>
+            </div>
             <div id="disconnect-banner" class="banner hidden">
                 连接已断开
                 <button id="reconnect-btn">重连</button>
