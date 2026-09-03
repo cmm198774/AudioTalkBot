@@ -17,10 +17,25 @@ def test_audio_constants():
 
 
 # ==========================================
-# 测试 WebSocket 地址包含模型名
+# 测试由 base_url 推导 realtime 地址：共用域名、换 /api-ws 路径
+# ==========================================
+def test_build_ws_url():
+    url = config.build_ws_url(
+        "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        "qwen-audio-3.0-realtime-plus",
+    )
+    assert url == (
+        "wss://token-plan.cn-beijing.maas.aliyuncs.com"
+        "/api-ws/v1/realtime?model=qwen-audio-3.0-realtime-plus"
+    )
+
+
+# ==========================================
+# 测试默认 WebSocket 地址包含模型名与正确路径
 # ==========================================
 def test_ws_url_contains_model():
-    assert config.DASHSCOPE_WS_URL.startswith("wss://dashscope.aliyuncs.com/api-ws/v1/realtime")
+    assert config.DASHSCOPE_WS_URL.startswith("wss://")
+    assert "/api-ws/v1/realtime" in config.DASHSCOPE_WS_URL
     assert config.MODEL_NAME in config.DASHSCOPE_WS_URL
 
 

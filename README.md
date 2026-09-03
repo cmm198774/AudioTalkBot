@@ -26,6 +26,11 @@
     DASHSCOPE_API_KEY=sk-xxxx
     ```
 
+    默认连接专属工作空间端点（`token-plan.cn-beijing.maas.aliyuncs.com`）。
+    如需改用其他工作空间，在 `.env` 中设置 `DASHSCOPE_BASE_URL`
+    （OpenAI 兼容 base_url），realtime 会自动改用同域名的
+    `/api-ws/v1/realtime` 路径。
+
 3. 启动：
 
     ```bash
@@ -46,7 +51,7 @@ conda run -n py310 python -m pytest tests/ -v
 浏览器（麦克风 16kHz 采集 / 24kHz 流式播放 / 字幕 / 设置）
     ↕ WebSocket（/ws/chat）
 FastAPI 后端（会话与预设持久化、鉴权隔离、事件分流）
-    ↕ WebSocket（wss://dashscope.aliyuncs.com/api-ws/v1/realtime）
+    ↕ WebSocket（wss://<工作空间域名>/api-ws/v1/realtime）
 阿里云百炼 qwen-audio-3.0-realtime-plus（服务端 VAD、动态打断、转写）
 ```
 

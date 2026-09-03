@@ -3,6 +3,7 @@
 # ==========================================
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -14,7 +15,32 @@ load_dotenv(BASE_DIR / ".env")
 
 # ---- 模型与连接 ----
 MODEL_NAME = "qwen-audio-3.0-realtime-plus"
-DASHSCOPE_WS_URL = f"wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model={MODEL_NAME}"
+
+# OpenAI 兼容模式的 base_url（可在 .env 用 DASHSCOPE_BASE_URL 覆盖）。
+# realtime 与它共用同一域名，但走 /api-ws/v1/realtime 路径。
+DASHSCOPE_BASE_URL = os.getenv(
+    "DASHSCOPE_BASE_URL",
+    "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+)
+
+
+# ==========================================
+# 由 base_url 推导 realtime WebSocket 地址
+# ==========================================
+def build_ws_url(base_url: str, model: str) -> str:
+    """
+    取 base_url 的域名（工作空间端点），拼接 realtime WebSocket 路径。
+    Args:
+        base_url: OpenAI 兼容 base_url，如 https://xxx.maas.aliyuncs.com/compatible-mode/v1 (str)
+        model: 模型名 (str)
+    Returns:
+        str: wss://<域名>/api-ws/v1/realtime?model=<model>
+    """
+    host = urlparse(base_url).netloc
+    return f"wss://{host}/api-ws/v1/realtime?model={model}"
+
+
+DASHSCOPE_WS_URL = build_ws_url(DASHSCOPE_BASE_URL, MODEL_NAME)
 
 # ---- 音频参数（官方协议：输入 16kHz、输出 24kHz、16bit 单声道 PCM）----
 INPUT_SAMPLE_RATE = 16000
