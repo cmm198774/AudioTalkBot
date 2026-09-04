@@ -4,7 +4,9 @@
 from app.protocol import (
     build_audio_append,
     build_history_events,
+    build_response_create,
     build_session_update,
+    build_tool_output,
 )
 
 
@@ -30,6 +32,45 @@ def test_build_session_update_full():
 def test_build_session_update_no_voice():
     event = build_session_update("提示词", ["audio"], voice="")
     assert "voice" not in event["session"]
+
+
+# ==========================================
+# 测试传入工具定义时 session.update 携带 tools
+# ==========================================
+def test_build_session_update_with_tools():
+    tools = [{"type": "function", "function": {"name": "write_to_board"}}]
+    event = build_session_update("提示词", ["text", "audio"], tools=tools)
+    assert event["session"]["tools"] == tools
+
+
+# ==========================================
+# 测试未传工具时省略 tools 字段
+# ==========================================
+def test_build_session_update_without_tools():
+    event = build_session_update("提示词", ["text", "audio"])
+    assert "tools" not in event["session"]
+
+
+# ==========================================
+# 测试工具结果回传事件
+# ==========================================
+def test_build_tool_output():
+    event = build_tool_output("call-1", '{"status": "ok"}')
+    assert event == {
+        "type": "conversation.item.create",
+        "item": {
+            "type": "function_call_output",
+            "call_id": "call-1",
+            "output": '{"status": "ok"}',
+        },
+    }
+
+
+# ==========================================
+# 测试触发模型继续回复的事件
+# ==========================================
+def test_build_response_create():
+    assert build_response_create() == {"type": "response.create"}
 
 
 # ==========================================

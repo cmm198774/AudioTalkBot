@@ -58,11 +58,15 @@ def test_get_api_key_present(monkeypatch):
 
 
 # ==========================================
-# 测试板书固定指令包含 [start]/[end] 标记约定
+# 测试板书固定指令与工具定义均指向 write_to_board 工具
 # ==========================================
-def test_board_prompt_marker():
-    assert "[start]" in config.BOARD_PROMPT
-    assert "[end]" in config.BOARD_PROMPT
+def test_board_prompt_tool_based():
+    assert "write_to_board" in config.BOARD_PROMPT
+    assert config.BOARD_TOOL["type"] == "function"
+    assert config.BOARD_TOOL["function"]["name"] == "write_to_board"
+    params = config.BOARD_TOOL["function"]["parameters"]
+    assert "content" in params["properties"]
+    assert params["required"] == ["content"]
 
 
 # ==========================================

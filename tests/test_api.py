@@ -132,11 +132,11 @@ def test_ws_chat_flow(monkeypatch):
     bridge = holder["bridge"]
     # instructions = 人设 + 固定板书指令
     assert bridge.connected[0].startswith("原有提示词")
-    assert "[start]" in bridge.connected[0]
+    assert "write_to_board" in bridge.connected[0]
     assert bridge.connected[1] == "audio_text"
     assert bridge.audio == ["QUJD"]
     assert bridge.updated[0].startswith("新提示词")
-    assert "[start]" in bridge.updated[0]
+    assert "write_to_board" in bridge.updated[0]
     assert bridge.updated[1] == "text"
     assert bridge.closed is True
 
@@ -173,7 +173,7 @@ def test_ws_chat_update_settings_keeps_persona(monkeypatch):
 
     bridge = holder["bridge"]
     assert bridge.updated[0].startswith("原有人设")
-    assert "[start]" in bridge.updated[0]
+    assert "write_to_board" in bridge.updated[0]
     assert bridge.updated[1] == "text"
 
 

@@ -7,13 +7,15 @@ from app.config import TRANSCRIPTION_MODEL
 # ==========================================
 # 构造 session.update 事件
 # ==========================================
-def build_session_update(instructions: str, modalities: list, voice: str = "") -> dict:
+def build_session_update(instructions: str, modalities: list, voice: str = "",
+                         tools: list = None) -> dict:
     """
-    构造会话配置事件（system prompt、输出模态、服务端 VAD、输入转写）。
+    构造会话配置事件（system prompt、输出模态、服务端 VAD、输入转写、工具）。
     Args:
         instructions: system prompt 内容 (str)
         modalities: 输出模态列表，如 ["text", "audio"] (list)
         voice: 发音人名称，空串表示使用默认 (str)
+        tools: 工具定义列表，缺省不启用工具调用 (list)
     Returns:
         dict: session.update 事件 JSON
     """
@@ -27,7 +29,39 @@ def build_session_update(instructions: str, modalities: list, voice: str = "") -
     }
     if voice:
         session["voice"] = voice
+    if tools:
+        session["tools"] = tools
     return {"type": "session.update", "session": session}
+
+
+# ==========================================
+# 构造工具结果回传事件
+# ==========================================
+def build_tool_output(call_id: str, output: str) -> dict:
+    """
+    构造 function_call_output 注入事件，把工具执行结果交还给模型。
+    Args:
+        call_id: 工具调用 ID，来自 function_call_arguments.done (str)
+        output: 工具结果字符串 (str)
+    Returns:
+        dict: conversation.item.create 事件 JSON
+    """
+    return {
+        "type": "conversation.item.create",
+        "item": {"type": "function_call_output", "call_id": call_id, "output": output},
+    }
+
+
+# ==========================================
+# 构造触发模型继续回复的事件
+# ==========================================
+def build_response_create() -> dict:
+    """
+    工具结果回传后触发模型继续生成（口头总结/下一段/再次调用工具）。
+    Returns:
+        dict: response.create 事件 JSON
+    """
+    return {"type": "response.create"}
 
 
 # ==========================================

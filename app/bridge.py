@@ -3,11 +3,11 @@
 # 上行：浏览器音频 → input_audio_buffer.append
 # 下行：服务端事件分流 → 音频/字幕/黑板/打断/状态/错误
 #
-# 板书段解析：模型回复中 [start]...[end] 包裹的内容只写黑板不朗读。
-# 文本流按标记切成字幕/黑板两路，标记位置记为"干净文本"的字符偏移；
-# 音频流按累计时长换算成已朗读字符数，落在黑板字符区间内的音频丢弃。
-# 用字符空间而非时间对齐，是因为文本常先于音频一次性到达，
-# 且音频块可能突发到达——累计朗读时长与到达时刻无关，映射稳定。
+# 板书通过 write_to_board 工具调用实现：模型口头讲解与工具调用
+# 交替进行，工具参数（黑板内容）是结构化文本、不被 TTS 朗读，
+# 天然"只写不读"，无需对音频流做任何掐断。
+# 工具结果回传后发 response.create 让模型继续口头总结，
+# 一轮用户发言内可多次"说话→写黑板→说话"。
 # ==========================================
 import asyncio
 import json
@@ -16,30 +16,27 @@ import logging
 from websockets.asyncio.client import connect as ws_connect
 
 from app.config import (
+    BOARD_TOOL,
     DASHSCOPE_WS_URL,
     OUTPUT_MODE_MODALITIES,
     build_ssl_context,
     get_api_key,
 )
-from app.protocol import build_audio_append, build_history_events, build_session_update
+from app.protocol import (
+    build_audio_append,
+    build_history_events,
+    build_response_create,
+    build_session_update,
+    build_tool_output,
+)
 
 logger = logging.getLogger(__name__)
 
-# 板书段标记：模型用 [start]/[end] 包裹黑板内容，该段只写不读
-_START_MARKER = "[start]"
-_END_MARKER = "[end]"
-_MARKERS = (_START_MARKER, _END_MARKER)
+# 板书工具名：只有它的调用内容会上黑板
+_BOARD_TOOL_NAME = BOARD_TOOL["function"]["name"]
 
-# 输出采样率下每秒音频的字节数（16bit 单声道）
-_BYTES_PER_SECOND = 24000 * 2
-
-# 朗读速度估计（字/秒）：音频累计时长乘以它得到已朗读字符数。
-# 实测模型语速约 5~6 字/秒，取 5.5 作为平衡值。
-# 指令要求模型在板书前后停顿约两秒，停顿带来的余量足以吸收速度估计误差
-_SPEECH_CHARS_PER_SEC = 5.5
-
-# 黑板字符区间两侧的容差（字）：补偿语速波动与 VAD 触发延迟
-_CHAR_PAD = 1.0
+# 工具结果统一回传"已写入"，模型据此继续口头总结
+_TOOL_OK_OUTPUT = json.dumps({"status": "ok", "message": "已写到黑板"}, ensure_ascii=False)
 
 # 已知但无需处理的服务端事件类型
 _IGNORED_EVENTS = (
@@ -54,50 +51,8 @@ _IGNORED_EVENTS = (
     "response.audio.done",
     "response.audio_transcript.done",
     "response.text.done",
+    "response.function_call_arguments.delta",
 )
-
-
-# ==========================================
-# base64 音频块换算为秒数
-# ==========================================
-def _b64_seconds(b64_audio: str) -> float:
-    """
-    把 base64 音频块换算成秒数（24kHz 16bit 单声道）。
-    Args:
-        b64_audio: base64 编码的 PCM (str)
-    Returns:
-        float: 音频时长（秒）
-    """
-    n = len(b64_audio)
-    if n == 0:
-        return 0.0
-    pad = 2 if b64_audio.endswith("==") else (1 if b64_audio.endswith("=") else 0)
-    byte_len = n * 3 // 4 - pad
-    return max(0.0, byte_len / _BYTES_PER_SECOND)
-
-
-# ==========================================
-# 计算可暂留的标记前缀尾巴长度
-# ==========================================
-def _holdable_suffix_len(text: str) -> int:
-    """
-    返回 text 末尾"可能是某个标记前缀"的最长尾巴长度。
-    标记可能跨多个增量切分（如先收到 [st 后收到 art]），
-    把可疑尾巴暂留缓冲，避免碎片泄漏到字幕或黑板。
-    Args:
-        text: 当前待发布的累积文本 (str)
-    Returns:
-        int: 应暂留的尾巴长度；0 表示没有碎片嫌疑
-    """
-    best = 0
-    for marker in _MARKERS:
-        upper = min(len(text), len(marker) - 1)
-        for k in range(upper, 0, -1):
-            if text.endswith(marker[:k]):
-                if k > best:
-                    best = k
-                break
-    return best
 
 
 # ==========================================
@@ -107,7 +62,7 @@ class RealtimeBridge:
     """
     管理一条 DashScope Realtime 连接，把服务端事件翻译成前端消息。
     前端消息格式：
-        audio / interrupt / transcript / board / state / error
+        audio / interrupt / transcript / board / state / error / new_response
     """
 
     def __init__(self, send_to_client, on_final_transcript=None, api_key: str = "",
@@ -128,22 +83,9 @@ class RealtimeBridge:
         self._recv_task = None
         self._speaking = False
         self._need_new_bubble = True  # 标记是否需要创建新字幕气泡
-        self._reset_turn()
-
-    # ==========================================
-    # 回合级段解析状态复位
-    # ==========================================
-    def _reset_turn(self) -> None:
-        """
-        复位一个回合内的所有段解析状态（响应开始/结束时调用）。
-        """
-        self._assistant_text = ""   # 原始累积文本（含标记），用于持久化
-        self._seg = "text"          # 当前所处段：text 字幕 / board 黑板
-        self._buf = ""              # 已累积但尚未发布的文本尾巴
-        self._seg_emitted = False   # 当前黑板段是否已发出过内容（首块带 new_segment）
-        self._clean_len = 0         # 已发布"干净文本"的字符总数（不含标记）
-        self._char_windows = []     # 黑板字符区间列表 [[start, end|None], ...]
-        self._audio_seconds = 0.0   # 本回合已收到的音频总秒数（含被丢弃的）
+        self._assistant_text = ""     # 本轮用户发言对应的口头文本，持久化用
+        self._pending_calls = []      # 当前 response 内待回传结果的工具调用 ID
+        self._interrupted = False     # 当前 response 是否被用户打断
 
     # ==========================================
     # 默认 WebSocket 工厂（生产路径）
@@ -164,7 +106,8 @@ class RealtimeBridge:
     # ==========================================
     async def connect(self, instructions: str, output_mode: str, history=None) -> None:
         """
-        连接 DashScope，发送 session.update，可选注入历史，然后启动接收循环。
+        连接 DashScope，发送 session.update（含板书工具），可选注入历史，
+        然后启动接收循环。
         Args:
             instructions: system prompt (str)
             output_mode: audio / text / audio_text (str)
@@ -173,7 +116,7 @@ class RealtimeBridge:
         modalities = OUTPUT_MODE_MODALITIES.get(output_mode, ["text", "audio"])
         headers = {"Authorization": f"Bearer {self._api_key}"}
         self._ws = await self._ws_factory(DASHSCOPE_WS_URL, headers)
-        await self._send_event(build_session_update(instructions, modalities))
+        await self._send_event(build_session_update(instructions, modalities, tools=[BOARD_TOOL]))
         if history:
             for event in build_history_events(history):
                 await self._send_event(event)
@@ -204,7 +147,7 @@ class RealtimeBridge:
         if self._ws is None:
             return
         modalities = OUTPUT_MODE_MODALITIES.get(output_mode, ["text", "audio"])
-        await self._send_event(build_session_update(instructions, modalities))
+        await self._send_event(build_session_update(instructions, modalities, tools=[BOARD_TOOL]))
 
     # ==========================================
     # 关闭连接与接收任务
@@ -291,14 +234,19 @@ class RealtimeBridge:
         elif etype == "input_audio_buffer.speech_started":
             self._speaking = False
             self._need_new_bubble = True  # 用户开口，标记需要新气泡
+            self._interrupted = True      # 进行中的回复被打断，不再续说
             await self._emit({"type": "interrupt"})
             await self._emit({"type": "state", "value": "listening"})
         elif etype == "response.created":
-            self._reset_turn()
+            self._pending_calls = []
+            self._interrupted = False
             if self._need_new_bubble:
                 await self._emit({"type": "new_response"})
                 self._need_new_bubble = False
+                self._assistant_text = ""  # 新一轮用户发言，口头文本重新累积
             await self._emit({"type": "state", "value": "thinking"})
+        elif etype == "response.function_call_arguments.done":
+            await self._handle_function_call(event)
         elif etype == "response.done":
             await self._handle_response_done()
         elif etype == "conversation.item.input_audio_transcription.completed":
@@ -312,23 +260,17 @@ class RealtimeBridge:
             logger.debug("未处理的事件类型: %s", etype)
 
     # ==========================================
-    # 内部：回复音频增量（黑板区间内丢弃）
+    # 内部：回复音频增量（直接转发，不做掐断）
     # ==========================================
     async def _handle_audio_delta(self, event: dict) -> None:
         """
-        转发音频增量；先用"已收到的音频总秒数"定位本块在朗读中的位置，
-        落在黑板字符区间内的音频直接丢弃，形成"老师写黑板时自然停顿"。
-        定位只依赖累计时长，音频突发到达也不受影响。
+        转发音频增量。模型不会朗读板书内容（走工具参数），
+        因此音频流全部都是该说的话，直接转发。
         Args:
             event: response.audio.delta 事件 (dict)
         """
         delta = event.get("delta", "")
         if not delta:
-            return
-        chunk_seconds = _b64_seconds(delta)
-        pos_seconds = self._audio_seconds
-        self._audio_seconds += chunk_seconds
-        if self._in_board_cut(pos_seconds, chunk_seconds):
             return
         if not self._speaking:
             self._speaking = True
@@ -336,39 +278,11 @@ class RealtimeBridge:
         await self._emit({"type": "audio", "data": delta})
 
     # ==========================================
-    # 内部：判断音频块是否落在黑板字符区间
-    # ==========================================
-    def _in_board_cut(self, pos_seconds: float, chunk_seconds: float) -> bool:
-        """
-        音频块覆盖的朗读区间 [pos, pos+dur] 换算成字符位置，
-        与任一黑板字符区间相交即视为板书内容对应的语音。
-        Args:
-            pos_seconds: 本块之前已收到的音频总秒数 (float)
-            chunk_seconds: 本块音频的秒数 (float)
-        Returns:
-            bool: True 表示该音频应被丢弃
-        """
-        if not self._char_windows:
-            return False
-        seg_start = pos_seconds
-        seg_end = pos_seconds + chunk_seconds
-        for char_start, char_end in self._char_windows:
-            win_start = max(0.0, char_start - _CHAR_PAD) / _SPEECH_CHARS_PER_SEC
-            if char_end is None:
-                win_end = float("inf")
-            else:
-                win_end = (char_end + _CHAR_PAD) / _SPEECH_CHARS_PER_SEC
-            if seg_start < win_end and seg_end > win_start:
-                return True
-        return False
-
-    # ==========================================
-    # 内部：回复文本增量（段解析入口）
+    # 内部：回复文本增量（口头字幕）
     # ==========================================
     async def _handle_transcript_delta(self, event: dict) -> None:
         """
-        累积文本增量并驱动段解析：标记前内容按当前段发布，
-        遇到标记切换段并记录黑板时间窗口。
+        累积口头文本并转发字幕增量。
         Args:
             event: 字幕/文本增量事件 (dict)
         """
@@ -376,90 +290,52 @@ class RealtimeBridge:
         if not delta:
             return
         self._assistant_text += delta
-        self._buf += delta
-        await self._drain_buf()
+        await self._emit({"type": "transcript", "role": "assistant", "delta": delta, "final": False})
 
     # ==========================================
-    # 内部：按标记排空缓冲区
+    # 内部：工具调用完成（板书上黑板）
     # ==========================================
-    async def _drain_buf(self) -> None:
+    async def _handle_function_call(self, event: dict) -> None:
         """
-        循环处理缓冲区：找到当前段对应的标记时，发布标记前内容并切段；
-        找不到完整标记时，只发布不可能属于标记前缀的部分，
-        尾巴留给下一个增量继续拼。
-        """
-        while True:
-            marker = _START_MARKER if self._seg == "text" else _END_MARKER
-            idx = self._buf.find(marker)
-            if idx >= 0:
-                pre = self._buf[:idx]
-                if pre:
-                    await self._emit_seg(pre)
-                self._buf = self._buf[idx + len(marker):]
-                self._flip_segment()
-                continue
-            hold_len = _holdable_suffix_len(self._buf)
-            emit_len = len(self._buf) - hold_len
-            if emit_len > 0:
-                chunk = self._buf[:emit_len]
-                self._buf = self._buf[emit_len:]
-                await self._emit_seg(chunk)
-            break
-
-    # ==========================================
-    # 内部：在标记处切换段状态
-    # ==========================================
-    def _flip_segment(self) -> None:
-        """
-        字幕段遇 [start] 切到黑板段，以当前干净字符数开字符区间；
-        黑板段遇 [end] 切回，以当前干净字符数关区间。
-        """
-        if self._seg == "text":
-            self._seg = "board"
-            self._seg_emitted = False
-            self._char_windows.append([self._clean_len, None])
-        else:
-            self._seg = "text"
-            if self._char_windows and self._char_windows[-1][1] is None:
-                self._char_windows[-1][1] = self._clean_len
-
-    # ==========================================
-    # 内部：按当前段发布一段文本
-    # ==========================================
-    async def _emit_seg(self, chunk: str) -> None:
-        """
-        黑板段发到黑板（该段首块带 new_segment 标记），字幕段发到字幕。
-        两段都计入干净字符数：模型会把板书内容读出来，
-        字符区间必须包含板书文字才能对准朗读位置。
+        工具参数解析后上黑板（每次调用作为一个新黑板段），
+        并记录 call_id 以便 response.done 时回传结果。
         Args:
-            chunk: 要发布的文本片段 (str)
+            event: response.function_call_arguments.done 事件 (dict)
         """
-        self._clean_len += len(chunk)
-        if self._seg == "board":
-            msg = {"type": "board", "delta": chunk}
-            if not self._seg_emitted:
-                msg["new_segment"] = True
-                self._seg_emitted = True
-            await self._emit(msg)
-        else:
-            await self._emit({"type": "transcript", "role": "assistant", "delta": chunk, "final": False})
+        call_id = event.get("call_id", "")
+        if not call_id:
+            return
+        self._pending_calls.append(call_id)
+        if event.get("name", "") != _BOARD_TOOL_NAME:
+            logger.warning("未知工具调用: %s", event.get("name"))
+            return
+        try:
+            content = json.loads(event.get("arguments", "") or "{}").get("content", "")
+        except json.JSONDecodeError:
+            content = ""
+        if content:
+            await self._emit({"type": "board", "delta": content, "new_segment": True})
 
     # ==========================================
-    # 内部：回合结束
+    # 内部：回复结束（工具编排 / 回合收尾）
     # ==========================================
     async def _handle_response_done(self) -> None:
         """
-        回合结束：把未决的标记碎片按当前段补发，持久化原始累积文本
-        （含 [start]/[end] 标记，历史渲染时再拆分），复位回合状态。
+        本 response 含工具调用时：回传结果并触发模型继续口头总结
+        （被打断则只回传不续说）；否则回合收尾，持久化口头文本。
         """
         self._speaking = False
-        if self._buf:
-            chunk = self._buf
-            self._buf = ""
-            await self._emit_seg(chunk)
+        if self._pending_calls:
+            calls = self._pending_calls
+            self._pending_calls = []
+            for call_id in calls:
+                await self._send_event(build_tool_output(call_id, _TOOL_OK_OUTPUT))
+            if not self._interrupted:
+                await self._send_event(build_response_create())
+                return  # 回合继续，不持久化、不切 listening
         if self._assistant_text and self._on_final_transcript is not None:
             await self._on_final_transcript("assistant", self._assistant_text)
-        self._reset_turn()
+            self._assistant_text = ""
         await self._emit({"type": "state", "value": "listening"})
 
     # ==========================================
