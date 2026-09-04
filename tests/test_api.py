@@ -116,7 +116,11 @@ def test_ws_chat_flow(monkeypatch):
 
     with client.websocket_connect("/ws/chat") as ws:
         ws.send_json({"type": "start", "session_id": sid})
-        # FakeBridge.connect 内触发用户转写 → 自动命名 → 后端推送 title
+        # FakeBridge.connect 内触发用户转写 → 先推上下文用量，再推自动命名
+        usage_msg = ws.receive_json()
+        assert usage_msg["type"] == "context_usage"
+        assert usage_msg["chars"] == len("你好，这是自动命名测试")
+        assert usage_msg["count"] == 1
         title_msg = ws.receive_json()
         assert title_msg["type"] == "title"
         assert title_msg["value"] == "你好，这是自动命名测试"

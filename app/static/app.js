@@ -373,6 +373,9 @@ function handleServerMessage(msg) {
         case 'title':
             renameCurrentSession(msg.value);
             break;
+        case 'context_usage':
+            setContextUsage(msg.chars, msg.count);
+            break;
         case 'error':
             toast(msg.message);
             break;
@@ -507,12 +510,17 @@ async function selectSession(sessionId) {
 
 // ==========================================
 // 上下文用量显示：字符数近似 token 数
+// 两条来源：切换会话/打开设置时回读会话；对话中后端实时推送
 // ==========================================
+function setContextUsage(chars, count) {
+    document.getElementById('context-usage').textContent =
+        `上下文用量：约 ${chars} / ${CONTEXT_LIMIT} 字符（${count} 条）`;
+}
+
 function updateContextUsage() {
-    const el = document.getElementById('context-usage');
     const transcript = (state.currentSession && state.currentSession.transcript) || [];
     const used = transcript.reduce((sum, item) => sum + (item.text || '').length, 0);
-    el.textContent = `上下文用量：约 ${used} / ${CONTEXT_LIMIT} 字符（${transcript.length} 条）`;
+    setContextUsage(used, transcript.length);
 }
 
 // ==========================================

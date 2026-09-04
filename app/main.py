@@ -299,7 +299,7 @@ async def ws_chat(ws: WebSocket):
 
     async def on_final_transcript(role: str, text: str) -> None:
         """
-        最终转写落盘；首句用户发言自动命名会话。
+        最终转写落盘；推送最新上下文用量；首句用户发言自动命名会话。
         Args:
             role: user 或 assistant (str)
             text: 转写文本 (str)
@@ -308,12 +308,19 @@ async def ws_chat(ws: WebSocket):
         if not session_id:
             return
         storage.append_transcript(session_id, role, text)
-        if role == "user":
-            session = storage.get_session(session_id)
-            if session is not None and session["title"] == "新对话":
-                title = text.strip()[:20] or "新对话"
-                storage.update_session(session_id, title=title)
-                await send_to_client({"type": "title", "value": title})
+        session = storage.get_session(session_id)
+        if session is None:
+            return
+        transcript = session["transcript"]
+        await send_to_client({
+            "type": "context_usage",
+            "chars": sum(len(item.get("text", "")) for item in transcript),
+            "count": len(transcript),
+        })
+        if role == "user" and session["title"] == "新对话":
+            title = text.strip()[:20] or "新对话"
+            storage.update_session(session_id, title=title)
+            await send_to_client({"type": "title", "value": title})
 
     try:
         while True:
