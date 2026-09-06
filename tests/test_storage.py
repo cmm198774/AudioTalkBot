@@ -101,3 +101,15 @@ def test_presets_crud():
     assert storage.delete_preset(preset["id"]) is True
     assert storage.list_presets() == []
     assert storage.delete_preset(preset["id"]) is False
+
+
+# ==========================================
+# 测试同名预设重复保存时覆盖而非追加
+# ==========================================
+def test_create_preset_same_name_overwrites():
+    first = storage.create_preset("心理咨询师", "旧版内容")
+    second = storage.create_preset("心理咨询师", "新版内容")
+    presets = storage.list_presets()
+    assert len(presets) == 1
+    assert second["id"] == first["id"]
+    assert presets[0]["prompt"] == "新版内容"

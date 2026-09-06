@@ -68,6 +68,21 @@ def test_presets_crud():
 
 
 # ==========================================
+# 测试同名预设重复保存时覆盖而非追加
+# ==========================================
+def test_presets_same_name_overwrites():
+    client = TestClient(main.app)
+    first = client.post("/api/presets", json={"name": "心理咨询师", "prompt": "旧版内容"})
+    second = client.post("/api/presets", json={"name": "心理咨询师", "prompt": "新版内容"})
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert second.json()["id"] == first.json()["id"]
+    presets = client.get("/api/presets").json()
+    assert len(presets) == 1
+    assert presets[0]["prompt"] == "新版内容"
+
+
+# ==========================================
 # 假桥接类：记录调用，模拟连接行为
 # ==========================================
 class FakeBridge:

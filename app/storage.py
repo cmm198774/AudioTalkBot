@@ -228,20 +228,26 @@ def list_presets() -> list:
 
 
 # ==========================================
-# 预设：创建
+# 预设：创建（同名覆盖）
 # ==========================================
 def create_preset(name: str, prompt: str) -> dict:
     """
-    创建人设预设并落盘。
+    创建人设预设并落盘；若已存在同名预设，用新内容覆盖旧预设
+    （保留原 id，不产生重复条目）。
     Args:
         name: 预设名称 (str)
         prompt: 预设的 system prompt 内容 (str)
     Returns:
-        dict: 新建的预设记录
+        dict: 新建或被覆盖的预设记录
     """
-    preset = {"id": uuid.uuid4().hex, "name": name, "prompt": prompt}
     with _LOCK:
         presets = _load(PRESETS_FILE, "presets")
+        for preset in presets:
+            if preset["name"] == name:
+                preset["prompt"] = prompt
+                _save(PRESETS_FILE, "presets", presets)
+                return preset
+        preset = {"id": uuid.uuid4().hex, "name": name, "prompt": prompt}
         presets.append(preset)
         _save(PRESETS_FILE, "presets", presets)
     return preset
