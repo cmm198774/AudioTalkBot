@@ -57,8 +57,11 @@ TRANSCRIPTION_MODEL = "qwen3-asr-flash"
 SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "qwen3.6-flash")
 
 # ---- 输出模式 → API modalities 映射 ----
+# API 硬性要求 modalities 必须包含 text：纯 ["audio"] 会让整个
+# session.update 被拒绝（人设与板书工具都注册不上）。
+# "仅语音"的体验改由桥接层实现：照常收字幕但不推送给前端显示。
 OUTPUT_MODE_MODALITIES = {
-    "audio": ["audio"],
+    "audio": ["text", "audio"],
     "text": ["text"],
     "audio_text": ["text", "audio"],
 }

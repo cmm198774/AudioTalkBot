@@ -13,7 +13,8 @@ def test_audio_constants():
     assert config.INPUT_SAMPLE_RATE == 16000
     assert config.OUTPUT_SAMPLE_RATE == 24000
     assert config.AUDIO_CHUNK_MS == 100
-    assert config.OUTPUT_MODE_MODALITIES["audio"] == ["audio"]
+    # API 强制 modalities 含 text，"仅语音"由桥接层不下发字幕实现
+    assert config.OUTPUT_MODE_MODALITIES["audio"] == ["text", "audio"]
     assert config.OUTPUT_MODE_MODALITIES["text"] == ["text"]
     assert config.OUTPUT_MODE_MODALITIES["audio_text"] == ["text", "audio"]
 

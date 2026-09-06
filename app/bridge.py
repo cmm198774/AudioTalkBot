@@ -8,6 +8,10 @@
 # 天然"只写不读"，无需对音频流做任何掐断。
 # 工具结果回传后发 response.create 让模型继续口头总结，
 # 一轮用户发言内可多次"说话→写黑板→说话"。
+#
+# "仅语音"输出模式：API 强制 modalities 含 text（纯 audio 会被整体拒绝，
+# 人设与工具都注册不上），因此 API 层与"语音+文字"相同，
+# 由本模块负责不把字幕推送给前端（照常累积与持久化）。
 # ==========================================
 import asyncio
 import json
@@ -86,6 +90,7 @@ class RealtimeBridge:
         self._assistant_text = ""     # 本轮用户发言对应的口头文本，持久化用
         self._pending_calls = []      # 当前 response 内待回传结果的工具调用 ID
         self._interrupted = False     # 当前 response 是否被用户打断
+        self._output_mode = "audio_text"  # 仅语音模式下不向前端推字幕
 
     # ==========================================
     # 默认 WebSocket 工厂（生产路径）
@@ -114,6 +119,7 @@ class RealtimeBridge:
             history: 历史对话记录列表，用于恢复上下文 (list)
         """
         modalities = OUTPUT_MODE_MODALITIES.get(output_mode, ["text", "audio"])
+        self._output_mode = output_mode
         headers = {"Authorization": f"Bearer {self._api_key}"}
         self._ws = await self._ws_factory(DASHSCOPE_WS_URL, headers)
         await self._send_event(build_session_update(instructions, modalities, tools=[BOARD_TOOL]))
@@ -147,6 +153,7 @@ class RealtimeBridge:
         if self._ws is None:
             return
         modalities = OUTPUT_MODE_MODALITIES.get(output_mode, ["text", "audio"])
+        self._output_mode = output_mode
         await self._send_event(build_session_update(instructions, modalities, tools=[BOARD_TOOL]))
 
     # ==========================================
@@ -282,7 +289,7 @@ class RealtimeBridge:
     # ==========================================
     async def _handle_transcript_delta(self, event: dict) -> None:
         """
-        累积口头文本并转发字幕增量。
+        累积口头文本并转发字幕增量；仅语音模式只累积不上屏。
         Args:
             event: 字幕/文本增量事件 (dict)
         """
@@ -290,6 +297,8 @@ class RealtimeBridge:
         if not delta:
             return
         self._assistant_text += delta
+        if self._output_mode == "audio":
+            return
         await self._emit({"type": "transcript", "role": "assistant", "delta": delta, "final": False})
 
     # ==========================================
@@ -343,13 +352,14 @@ class RealtimeBridge:
     # ==========================================
     async def _handle_user_transcript(self, event: dict) -> None:
         """
-        转发用户最终转写并持久化。
+        转发用户最终转写并持久化；仅语音模式只持久化不上屏。
         Args:
             event: input_audio_transcription.completed 事件 (dict)
         """
         text = event.get("transcript", "")
         if not text:
             return
-        await self._emit({"type": "transcript", "role": "user", "delta": text, "final": True})
+        if self._output_mode != "audio":
+            await self._emit({"type": "transcript", "role": "user", "delta": text, "final": True})
         if self._on_final_transcript is not None:
             await self._on_final_transcript("user", text)

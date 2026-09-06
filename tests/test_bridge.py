@@ -2,6 +2,7 @@
 # 桥接模块测试：连接握手、事件分流、打断、转写持久化、
 # write_to_board 工具调用的黑板上屏与"说话→工具→续说"编排
 # ==========================================
+import asyncio
 import json
 
 from app.bridge import RealtimeBridge
@@ -9,10 +10,12 @@ from app.bridge import RealtimeBridge
 
 # ==========================================
 # 假 WebSocket：脚本化返回事件、记录发送内容
+# gate 非空时，每次取事件前先等门闩放行（消除测试竞态）
 # ==========================================
 class FakeWebSocket:
-    def __init__(self, events: list):
+    def __init__(self, events: list, gate=None):
         self._events = [dict(e) for e in events]
+        self._gate = gate
         self.sent = []
         self.closed = False
 
@@ -23,6 +26,8 @@ class FakeWebSocket:
         return self
 
     async def __anext__(self) -> str:
+        if self._gate is not None:
+            await self._gate.wait()
         if not self._events:
             raise StopAsyncIteration
         return json.dumps(self._events.pop(0), ensure_ascii=False)
@@ -364,6 +369,58 @@ async def test_unknown_tool_call_no_board():
                if e["type"] == "conversation.item.create"
                and e["item"]["type"] == "function_call_output"]
     assert [o["item"]["call_id"] for o in outputs] == ["call-x"]
+    await bridge.close()
+
+
+# ==========================================
+# 测试仅语音模式：session.update 仍带 text modality（API 强制），
+# 字幕不推送前端，但口头文本与用户转写照常持久化
+# ==========================================
+async def test_audio_mode_suppresses_transcripts():
+    fake_ws = FakeWebSocket([
+        {"type": "response.created"},
+        {"type": "response.audio_transcript.delta", "delta": "Bonjour"},
+        {"type": "response.audio.delta", "delta": "QUJD"},
+        {"type": "conversation.item.input_audio_transcription.completed", "transcript": "你好"},
+        {"type": "response.done"},
+    ])
+    urls, headers, received, finals = [], [], [], []
+    bridge = make_bridge(fake_ws, urls, headers, received, finals)
+    await bridge.connect("", "audio")
+
+    # API 层必须带 text，否则 session.update 整体被拒、工具注册不上
+    assert fake_ws.sent[0]["session"]["modalities"] == ["text", "audio"]
+    assert fake_ws.sent[0]["session"]["tools"][0]["function"]["name"] == "write_to_board"
+
+    await bridge.wait_recv_done()
+    # 音频照常转发，字幕（助手与用户）一律不上屏
+    assert {"type": "audio", "data": "QUJD"} in received
+    assert not any(m["type"] == "transcript" for m in received)
+    # 持久化不受影响（用户转写事件先于 response.done 到达）
+    assert finals == [("user", "你好"), ("assistant", "Bonjour")]
+    await bridge.close()
+
+
+# ==========================================
+# 测试热更新切到仅语音模式后同样抑制字幕
+# ==========================================
+async def test_update_session_switches_to_audio_mode():
+    gate = asyncio.Event()
+    fake_ws = FakeWebSocket([
+        {"type": "response.audio_transcript.delta", "delta": "你好"},
+        {"type": "response.done"},
+    ], gate=gate)
+    urls, headers, received, finals = [], [], [], []
+    bridge = make_bridge(fake_ws, urls, headers, received, finals)
+    await bridge.connect("", "audio_text")
+    await bridge.update_session("新人设", "audio")
+    updates = [e for e in fake_ws.sent if e["type"] == "session.update"]
+    assert updates[-1]["session"]["modalities"] == ["text", "audio"]
+    # 门闩放行后事件才被消费，此时模式已切到仅语音
+    gate.set()
+    await bridge.wait_recv_done()
+    assert not any(m["type"] == "transcript" for m in received)
+    assert finals == [("assistant", "你好")]
     await bridge.close()
 
 
