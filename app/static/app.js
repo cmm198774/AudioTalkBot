@@ -794,7 +794,23 @@ function bindEvents() {
 // 显示/隐藏登录界面与主界面
 // ==========================================
 function showAuthScreen() {
+    // 清空状态
     state.username = null;
+    state.sessionId = null;
+    state.sessions = [];
+    state.presets = [];
+    state.currentSession = null;
+    state.currentAssistantBubble = null;
+
+    // 清空 UI
+    document.getElementById('transcript').innerHTML = '';
+    document.getElementById('board-content').textContent = '';
+    document.getElementById('session-list').innerHTML = '';
+    document.getElementById('session-title').textContent = '未选择会话';
+    document.getElementById('preset-select').innerHTML = '';
+    document.getElementById('context-usage').textContent = '上下文用量：--';
+
+    // 显示登录界面
     document.getElementById('auth-screen').classList.remove('hidden');
     document.getElementById('main-app').classList.add('hidden');
 }
