@@ -415,6 +415,7 @@ async function startTalk() {
     state.talking = true;
     updateTalkButton();
     setOutputModeEnabled(false);
+    setContextButtonsEnabled(false);
     setStatus('listening');
     startLevelMeter();
     // WebSocket 可能仍在握手，等待打开后再发 start
@@ -439,6 +440,7 @@ function stopTalk() {
     setStatus('idle');
     updateTalkButton();
     setOutputModeEnabled(true);
+    setContextButtonsEnabled(true);
 }
 
 function updateTalkButton() {
@@ -634,6 +636,17 @@ function setOutputModeEnabled(enabled) {
             radio.parentElement.classList.add('disabled');
         }
     });
+}
+
+function setContextButtonsEnabled(enabled) {
+    const compressBtn = document.getElementById('compress-btn');
+    const clearBtn = document.getElementById('clear-history-btn');
+    if (compressBtn) {
+        compressBtn.disabled = !enabled;
+    }
+    if (clearBtn) {
+        clearBtn.disabled = !enabled;
+    }
 }
 
 async function saveSettings() {
