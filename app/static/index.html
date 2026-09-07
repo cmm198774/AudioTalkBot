@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>语音对话机器人</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260907">
+    <link rel="stylesheet" href="/static/style.css?v=20260908">
 </head>
 <body>
     <!-- 登录/注册界面 -->
@@ -105,8 +105,10 @@
             </div>
 
             <label class="field-label">我的凭证</label>
-            <input type="text" id="cred-base-url" placeholder="Base URL（留空用默认）">
-            <input type="password" id="cred-api-key" placeholder="API Key">
+            <label class="field-label-small">Base URL</label>
+            <input type="text" id="cred-base-url" placeholder="留空用默认">
+            <label class="field-label-small">API Key</label>
+            <input type="password" id="cred-api-key" placeholder="">
             <div class="row">
                 <button id="save-credentials-btn">保存凭证</button>
             </div>
