@@ -4,10 +4,32 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>语音对话机器人</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260905">
+    <link rel="stylesheet" href="/static/style.css?v=20260907">
 </head>
 <body>
-    <div class="app">
+    <!-- 登录/注册界面 -->
+    <div id="auth-screen" class="auth-screen">
+        <div class="auth-box">
+            <h1>语音对话机器人</h1>
+            <div class="auth-tabs">
+                <button class="auth-tab active" data-tab="login">登录</button>
+                <button class="auth-tab" data-tab="register">注册</button>
+            </div>
+            <form id="login-form" class="auth-form">
+                <input type="text" id="login-username" placeholder="用户名" required>
+                <input type="password" id="login-password" placeholder="密码" required>
+                <button type="submit">登录</button>
+            </form>
+            <form id="register-form" class="auth-form hidden">
+                <input type="text" id="register-username" placeholder="用户名" required>
+                <input type="password" id="register-password" placeholder="密码" required>
+                <button type="submit">注册</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- 主界面 -->
+    <div id="main-app" class="app hidden">
         <!-- 左侧：会话列表 -->
         <aside class="sidebar">
             <div class="sidebar-header">
@@ -16,7 +38,9 @@
             </div>
             <ul id="session-list"></ul>
             <div class="sidebar-footer">
+                <span id="current-username" class="username"></span>
                 <button id="settings-btn">⚙ 设置</button>
+                <button id="logout-btn">退出</button>
             </div>
         </aside>
 
@@ -80,6 +104,14 @@
                 <label><input type="radio" name="output-mode" value="text"> 仅文字</label>
             </div>
 
+            <label class="field-label">我的凭证</label>
+            <input type="text" id="cred-base-url" placeholder="Base URL（留空用默认）">
+            <input type="password" id="cred-api-key" placeholder="API Key">
+            <div class="row">
+                <button id="save-credentials-btn">保存凭证</button>
+            </div>
+            <p id="credential-status" class="hint"></p>
+
             <label class="field-label">上下文管理</label>
             <div class="row">
                 <span id="context-usage" class="hint">上下文用量：--</span>
@@ -95,16 +127,12 @@
             </div>
 
             <p class="hint">建议佩戴耳机，避免外放声音被麦克风拾取造成误打断。</p>
-            <p id="api-key-warning" class="hint warn hidden">
-                ⚠ 未检测到 API Key：请在项目根目录 .env 中配置
-                DASHSCOPE_API_KEY 后重启服务。
-            </p>
         </aside>
     </div>
 
     <div id="toast" class="toast hidden"></div>
 
-    <script src="/static/audio.js?v=20260905"></script>
-    <script src="/static/app.js?v=20260905"></script>
+    <script src="/static/audio.js?v=20260907"></script>
+    <script src="/static/app.js?v=20260907"></script>
 </body>
 </html>

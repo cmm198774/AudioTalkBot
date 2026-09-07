@@ -21,10 +21,11 @@ from websockets.asyncio.client import connect as ws_connect
 
 from app.config import (
     BOARD_TOOL,
-    DASHSCOPE_WS_URL,
+    DASHSCOPE_BASE_URL,
+    MODEL_NAME,
     OUTPUT_MODE_MODALITIES,
     build_ssl_context,
-    get_api_key,
+    build_ws_url,
 )
 from app.protocol import (
     build_audio_append,
@@ -70,18 +71,21 @@ class RealtimeBridge:
     """
 
     def __init__(self, send_to_client, on_final_transcript=None, api_key: str = "",
-                 ws_factory=None):
+                 base_url: str = "", ws_factory=None):
         """
         初始化桥接器。
         Args:
             send_to_client: 异步回调，把 dict 消息发给浏览器 (callable)
             on_final_transcript: 异步回调 (role, text)，最终转写落盘用 (callable)
-            api_key: DashScope API key，缺省读环境变量 (str)
+            api_key: DashScope API key (str)
+            base_url: DashScope base_url，空串用默认 (str)
             ws_factory: 可注入的 WS 连接工厂，测试用 (callable)
         """
         self._send_to_client = send_to_client
         self._on_final_transcript = on_final_transcript
-        self._api_key = api_key or get_api_key()
+        self._api_key = api_key
+        self._base_url = base_url or DASHSCOPE_BASE_URL
+        self._ws_url = build_ws_url(self._base_url, MODEL_NAME)
         self._ws_factory = ws_factory or self._default_ws_factory
         self._ws = None
         self._recv_task = None
@@ -121,7 +125,7 @@ class RealtimeBridge:
         modalities = OUTPUT_MODE_MODALITIES.get(output_mode, ["text", "audio"])
         self._output_mode = output_mode
         headers = {"Authorization": f"Bearer {self._api_key}"}
-        self._ws = await self._ws_factory(DASHSCOPE_WS_URL, headers)
+        self._ws = await self._ws_factory(self._ws_url, headers)
         await self._send_event(build_session_update(instructions, modalities, tools=[BOARD_TOOL]))
         if history:
             for event in build_history_events(history):

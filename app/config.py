@@ -100,8 +100,21 @@ BOARD_TOOL = {
 
 # ---- 数据持久化路径 ----
 DATA_DIR = BASE_DIR / "data"
-SESSIONS_FILE = DATA_DIR / "sessions.json"
-PRESETS_FILE = DATA_DIR / "presets.json"
+USERS_FILE = DATA_DIR / "users.json"
+
+
+# ==========================================
+# 获取用户专属数据目录
+# ==========================================
+def get_user_data_dir(username: str) -> Path:
+    """
+    返回用户的数据目录：data/sessions/{username}/
+    Args:
+        username: 用户名 (str)
+    Returns:
+        Path: 用户数据目录
+    """
+    return DATA_DIR / "sessions" / username
 
 
 # ==========================================

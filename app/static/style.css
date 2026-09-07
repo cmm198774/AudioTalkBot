@@ -88,6 +88,33 @@ body {
 .sidebar-footer {
     padding: 12px 16px;
     border-top: 1px solid #2a2e36;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+
+.sidebar-footer .username {
+    flex: 1;
+    font-size: 13px;
+    color: #8a8f98;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sidebar-footer button {
+    background: none;
+    border: 1px solid #3a3f48;
+    color: #c8ccd4;
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.sidebar-footer button:hover {
+    background: #2a2e36;
 }
 
 /* ---- 中央对话区 ---- */
@@ -383,4 +410,105 @@ button:hover {
     padding: 10px 18px;
     border-radius: 8px;
     z-index: 99;
+}
+
+/* ---- 登录/注册界面 ---- */
+.auth-screen {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    background: #14161a;
+}
+
+.auth-box {
+    background: #1b1e24;
+    padding: 32px 40px;
+    border-radius: 12px;
+    width: 320px;
+    text-align: center;
+}
+
+.auth-box h1 {
+    font-size: 20px;
+    margin-bottom: 20px;
+    color: #e6e6e6;
+}
+
+.auth-tabs {
+    display: flex;
+    margin-bottom: 20px;
+    border-bottom: 1px solid #2a2e36;
+}
+
+.auth-tab {
+    flex: 1;
+    background: none;
+    border: none;
+    color: #8a8f98;
+    padding: 10px;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+.auth-tab.active {
+    color: #4a9eff;
+    border-bottom: 2px solid #4a9eff;
+    margin-bottom: -1px;
+}
+
+.auth-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.auth-form input {
+    padding: 10px 12px;
+    border: 1px solid #2a2e36;
+    border-radius: 6px;
+    background: #14161a;
+    color: #e6e6e6;
+    font-size: 14px;
+}
+
+.auth-form input:focus {
+    outline: none;
+    border-color: #4a9eff;
+}
+
+.auth-form button {
+    padding: 10px;
+    border: none;
+    border-radius: 6px;
+    background: #2d4a72;
+    color: #fff;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+.auth-form button:hover {
+    background: #3a5f94;
+}
+
+/* ---- 凭证输入框 ---- */
+#settings-drawer input[type="text"],
+#settings-drawer input[type="password"] {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid #2a2e36;
+    border-radius: 6px;
+    background: #14161a;
+    color: #e6e6e6;
+    font-size: 13px;
+    margin-bottom: 8px;
+}
+
+#settings-drawer input:focus {
+    outline: none;
+    border-color: #4a9eff;
+}
+
+#credential-status {
+    margin-top: 4px;
 }

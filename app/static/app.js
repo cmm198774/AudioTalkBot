@@ -15,6 +15,7 @@ const state = {
     boardOn: true,
     boardRatio: 0.5,
     currentSession: null,
+    username: null,
 };
 
 window.AUDIO_CONFIG = { input_sample_rate: 16000, output_sample_rate: 24000 };
@@ -35,6 +36,10 @@ const STATUS_TEXT = {
 async function api(path, options) {
     const opts = Object.assign({ headers: { 'Content-Type': 'application/json' } }, options || {});
     const resp = await fetch(path, opts);
+    if (resp.status === 401) {
+        showAuthScreen();
+        throw new Error('未登录或登录已过期');
+    }
     if (!resp.ok) {
         const detail = await resp.text();
         throw new Error(`请求失败 ${resp.status}: ${detail}`);
@@ -720,24 +725,127 @@ function bindEvents() {
     document.querySelectorAll('input[name="output-mode"]').forEach((radio) => {
         radio.addEventListener('change', saveSettings);
     });
+    // 认证相关
+    document.querySelectorAll('.auth-tab').forEach((tab) => {
+        tab.addEventListener('click', (e) => {
+            document.querySelectorAll('.auth-tab').forEach((t) => t.classList.remove('active'));
+            e.target.classList.add('active');
+            const tabName = e.target.dataset.tab;
+            document.getElementById('login-form').classList.toggle('hidden', tabName !== 'login');
+            document.getElementById('register-form').classList.toggle('hidden', tabName !== 'register');
+        });
+    });
+    document.getElementById('login-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const username = document.getElementById('login-username').value;
+        const password = document.getElementById('login-password').value;
+        try {
+            await api('/api/auth/login', {
+                method: 'POST',
+                body: JSON.stringify({ username, password }),
+            });
+            showMainApp(username);
+        } catch (err) {
+            toast(err.message);
+        }
+    });
+    document.getElementById('register-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const username = document.getElementById('register-username').value;
+        const password = document.getElementById('register-password').value;
+        try {
+            await api('/api/auth/register', {
+                method: 'POST',
+                body: JSON.stringify({ username, password }),
+            });
+            showMainApp(username);
+        } catch (err) {
+            toast(err.message);
+        }
+    });
+    document.getElementById('logout-btn').addEventListener('click', async () => {
+        if (state.talking) {
+            stopTalk();
+        }
+        try {
+            await api('/api/auth/logout', { method: 'POST' });
+        } catch (e) {
+            // 忽略
+        }
+        showAuthScreen();
+    });
+    document.getElementById('save-credentials-btn').addEventListener('click', async () => {
+        const apiKey = document.getElementById('cred-api-key').value;
+        const baseUrl = document.getElementById('cred-base-url').value;
+        try {
+            await api('/api/credentials', {
+                method: 'PUT',
+                body: JSON.stringify({ api_key: apiKey, base_url: baseUrl }),
+            });
+            toast('凭证已保存');
+            await loadCredentials();
+        } catch (err) {
+            toast(err.message);
+        }
+    });
 }
 
-window.addEventListener('DOMContentLoaded', async () => {
+// ==========================================
+// 显示/隐藏登录界面与主界面
+// ==========================================
+function showAuthScreen() {
+    state.username = null;
+    document.getElementById('auth-screen').classList.remove('hidden');
+    document.getElementById('main-app').classList.add('hidden');
+}
+
+async function showMainApp(username) {
+    state.username = username;
+    document.getElementById('auth-screen').classList.add('hidden');
+    document.getElementById('main-app').classList.remove('hidden');
+    document.getElementById('current-username').textContent = username;
+    await initMainApp();
+}
+
+async function initMainApp() {
     try {
         const config = await api('/api/config');
         window.AUDIO_CONFIG.input_sample_rate = config.input_sample_rate;
         window.AUDIO_CONFIG.output_sample_rate = config.output_sample_rate;
-        if (!config.has_api_key) {
-            document.getElementById('api-key-warning').classList.remove('hidden');
-        }
         await loadSessions();
         await loadPresets();
-        bindEvents();
+        await loadCredentials();
         initBoard();
         if (state.sessions.length > 0) {
             await selectSession(state.sessions[0].id);
         }
     } catch (err) {
         toast(`初始化失败：${err.message}`);
+    }
+}
+
+// ==========================================
+// 加载用户凭证
+// ==========================================
+async function loadCredentials() {
+    try {
+        const creds = await api('/api/credentials');
+        document.getElementById('cred-api-key').value = creds.api_key || '';
+        document.getElementById('cred-base-url').value = creds.base_url || '';
+        const status = document.getElementById('credential-status');
+        status.textContent = creds.api_key ? '✓ 已配置 API Key' : '⚠ 未配置 API Key，无法开始对话';
+        status.style.color = creds.api_key ? '#4caf50' : '#ff9800';
+    } catch (e) {
+        // 忽略
+    }
+}
+
+window.addEventListener('DOMContentLoaded', async () => {
+    bindEvents();
+    try {
+        const me = await api('/api/auth/me');
+        await showMainApp(me.username);
+    } catch (err) {
+        showAuthScreen();
     }
 });
