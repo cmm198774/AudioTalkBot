@@ -414,6 +414,7 @@ async function startTalk() {
     }
     state.talking = true;
     updateTalkButton();
+    setOutputModeEnabled(false);
     setStatus('listening');
     startLevelMeter();
     // WebSocket 可能仍在握手，等待打开后再发 start
@@ -437,6 +438,7 @@ function stopTalk() {
     sendWs({ type: 'stop' });
     setStatus('idle');
     updateTalkButton();
+    setOutputModeEnabled(true);
 }
 
 function updateTalkButton() {
@@ -620,6 +622,12 @@ function setOutputMode(mode) {
     if (radio) {
         radio.checked = true;
     }
+}
+
+function setOutputModeEnabled(enabled) {
+    document.querySelectorAll('input[name="output-mode"]').forEach((radio) => {
+        radio.disabled = !enabled;
+    });
 }
 
 async function saveSettings() {
