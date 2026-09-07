@@ -346,6 +346,13 @@ body.dragging-board {
     font-size: 13px;
 }
 
+.field-label-small {
+    display: block;
+    margin: 8px 0 4px;
+    color: #9aa0aa;
+    font-size: 12px;
+}
+
 #prompt-input {
     width: 100%;
     background: #14161a;
@@ -366,6 +373,12 @@ body.dragging-board {
 
 .radio-row label {
     font-size: 13px;
+}
+
+.radio-row label.disabled {
+    opacity: 0.5;
+    pointer-events: none;
+    cursor: not-allowed;
 }
 
 select, button {

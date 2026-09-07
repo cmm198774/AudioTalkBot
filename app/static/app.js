@@ -626,7 +626,13 @@ function setOutputMode(mode) {
 
 function setOutputModeEnabled(enabled) {
     document.querySelectorAll('input[name="output-mode"]').forEach((radio) => {
-        radio.disabled = !enabled;
+        if (enabled) {
+            radio.classList.remove('disabled');
+            radio.parentElement.classList.remove('disabled');
+        } else {
+            radio.classList.add('disabled');
+            radio.parentElement.classList.add('disabled');
+        }
     });
 }
 
