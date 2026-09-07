@@ -836,6 +836,7 @@ function showAuthScreen() {
     document.getElementById('session-title').textContent = '未选择会话';
     document.getElementById('preset-select').innerHTML = '';
     document.getElementById('context-usage').textContent = '上下文用量：--';
+    document.getElementById('prompt-input').value = '';
 
     // 显示登录界面
     document.getElementById('auth-screen').classList.remove('hidden');
