@@ -2,6 +2,7 @@
 # FastAPI 入口：用户认证、会话/预设 REST 接口、WebSocket 对话
 # 所有数据按用户隔离，每个用户自带 API key 和 base_url
 # ==========================================
+import asyncio
 import logging
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from app.config import (
     OUTPUT_SAMPLE_RATE,
     build_ws_url,
 )
+from app.context import CONTEXT_INPUT_LIMIT
 
 logging.basicConfig(
     level=logging.INFO,
@@ -370,8 +372,10 @@ async def compress_history(session_id: str, username: str = Depends(get_current_
     old, recent = context.split_old_recent(session["transcript"])
     if not old:
         raise HTTPException(status_code=400, detail="对话历史太少，无需压缩")
+    old_text = "\n".join(item.get("text", "") for item in old)
+    lang = context.detect_language(old_text)
     try:
-        summary = await SUMMARIZER(old)
+        summary = await SUMMARIZER(old, language=lang)
     except Exception as exc:
         logger.warning("上下文压缩失败: %s", exc)
         raise HTTPException(status_code=502, detail=f"摘要失败：{exc}")
@@ -433,6 +437,9 @@ BRIDGE_CLASS = RealtimeBridge
 # 摘要器注入点（测试用假实现替换，避免发真实请求）
 SUMMARIZER = context.summarize_old_turns
 
+# 自动压缩阈值：上下文用量达到此值时自动触发压缩（约为上限的 80%）
+AUTO_COMPRESS_THRESHOLD = int(CONTEXT_INPUT_LIMIT * 0.8)
+
 
 # ==========================================
 # 拼接下发给模型的完整指令：用户人设 + 固定板书指令
@@ -446,6 +453,36 @@ def compose_instructions(persona: str) -> str:
         str: 完整 instructions
     """
     return (persona or "") + BOARD_PROMPT
+
+
+# ==========================================
+# 自动压缩：检测语言 + 生成摘要 + 替换存储
+# ==========================================
+async def auto_compress_session(username: str, session: dict) -> list:
+    """
+    检测旧对话的主要语言，用同语言生成摘要，压缩后替换存储。
+    Args:
+        username: 当前用户名 (str)
+        session: 当前会话记录 (dict)
+    Returns:
+        list: 压缩后的新对话历史
+    Raises:
+        Exception: 摘要生成失败
+    """
+    old, recent = context.split_old_recent(session["transcript"])
+    if not old:
+        return session["transcript"]
+    old_text = "\n".join(item.get("text", "") for item in old)
+    lang = context.detect_language(old_text)
+    logger.info(
+        "上下文超限（%d 字符），自动压缩（语言=%s）",
+        sum(len(item.get("text", "")) for item in session["transcript"]),
+        lang,
+    )
+    summary = await SUMMARIZER(old, language=lang)
+    new_transcript = context.merge_compressed(summary, recent)
+    storage.replace_transcript(username, session["id"], new_transcript)
+    return new_transcript
 
 
 # ==========================================
@@ -469,7 +506,7 @@ async def ws_chat(
         return
     await ws.accept()
     bridge = None
-    state = {"session_id": None}
+    state = {"session_id": None, "compressing": False}
 
     async def send_to_client(msg: dict) -> None:
         """
@@ -479,9 +516,101 @@ async def ws_chat(
         """
         await ws.send_json(msg)
 
+    # ==========================================
+    # 辅助：创建并连接 bridge（start 和自动重连共用）
+    # ==========================================
+    async def _create_bridge(session: dict, history: list = None) -> None:
+        """
+        创建新的 RealtimeBridge 并连接 DashScope。
+        使用闭包变量 bridge / state / username 等。
+        Args:
+            session: 当前会话记录 (dict)
+            history: 注入的历史记录，缺省用 session["transcript"] (list)
+        """
+        nonlocal bridge
+        creds = auth.decrypt_user_credentials(username)
+        api_key = creds["api_key"]
+        base_url = creds["base_url"]
+        if not api_key:
+            raise ValueError("未配置 API Key")
+        instructions = compose_instructions(session["system_prompt"])
+        output_mode = session["output_mode"]
+        hist = history if history is not None else session["transcript"]
+        logger.info(
+            "创建新 bridge: api_key=%d chars, base_url=%s, history=%d items, output=%s",
+            len(api_key), base_url[:50], len(hist), output_mode,
+        )
+        bridge = BRIDGE_CLASS(
+            send_to_client=send_to_client,
+            on_final_transcript=on_final_transcript,
+            api_key=api_key,
+            base_url=base_url,
+        )
+        logger.info("调用 bridge.connect()...")
+        await bridge.connect(
+            instructions=instructions,
+            output_mode=output_mode,
+            history=hist,
+        )
+        logger.info("bridge.connect() 完成")
+
+    # ==========================================
+    # 辅助：压缩后关闭旧 bridge 并重连（独立任务中执行）
+    # ==========================================
+    async def _reconnect_bridge(sid: str, new_transcript: list) -> None:
+        """
+        关闭旧 bridge 并用压缩后的历史重新连接，最多重试 3 次。
+        必须以独立 asyncio 任务运行：on_final_transcript 回调发生在
+        bridge 自己的接收循环任务内，若在回调里直接 close 会
+        自我取消导致 RecursionError。
+        Args:
+            sid: 会话 id (str)
+            new_transcript: 压缩后的对话历史 (list)
+        """
+        nonlocal bridge
+        try:
+            if bridge is not None:
+                old = bridge
+                bridge = None
+                await old.close()
+                logger.info("旧 bridge 已关闭")
+            session = storage.get_session(username, sid)
+            if session is None:
+                logger.warning("压缩后 session 不存在: %s", sid)
+                await send_to_client({
+                    "type": "error",
+                    "message": "压缩后会话丢失，请重新选择会话",
+                })
+                return
+            for attempt in range(1, 4):
+                try:
+                    logger.info("重连尝试 %d/3...", attempt)
+                    await _create_bridge(session, new_transcript)
+                    logger.info("新 bridge 已连接")
+                    chars = sum(len(i.get("text", "")) for i in new_transcript)
+                    await send_to_client({
+                        "type": "context_usage",
+                        "chars": chars,
+                        "count": len(new_transcript),
+                    })
+                    await send_to_client({"type": "auto_compressed"})
+                    break
+                except Exception as reconn_exc:
+                    logger.warning("重连尝试 %d 失败: %s", attempt, reconn_exc)
+                    if attempt < 3:
+                        await asyncio.sleep(1 * attempt)
+                    else:
+                        await send_to_client({
+                            "type": "error",
+                            "message": f"上下文已压缩，但重新连接失败，请手动重新开始对话：{reconn_exc}",
+                        })
+        finally:
+            state["compressing"] = False
+
     async def on_final_transcript(role: str, text: str) -> None:
         """
         最终转写落盘；推送最新上下文用量；首句用户发言自动命名会话。
+        上下文超限时自动压缩并重连 bridge。
         Args:
             role: user 或 assistant (str)
             text: 转写文本 (str)
@@ -494,15 +623,40 @@ async def ws_chat(
         if session is None:
             return
         transcript = session["transcript"]
+        chars = sum(len(item.get("text", "")) for item in transcript)
         await send_to_client({
             "type": "context_usage",
-            "chars": sum(len(item.get("text", "")) for item in transcript),
+            "chars": chars,
             "count": len(transcript),
         })
         if role == "user" and session["title"] == "新对话":
             title = text.strip()[:20] or "新对话"
             storage.update_session(username, sid, title=title)
             await send_to_client({"type": "title", "value": title})
+        # 上下文超限 → 自动压缩（compressing 标记防止重入）
+        if chars > AUTO_COMPRESS_THRESHOLD and not state["compressing"]:
+            state["compressing"] = True
+            try:
+                await send_to_client({"type": "compressing"})
+                logger.info("开始自动压缩，session=%s, chars=%d", sid, chars)
+                new_transcript = await auto_compress_session(username, session)
+                logger.info(
+                    "压缩完成: %d 条 → %d 条 (%d 字符)",
+                    len(session["transcript"]),
+                    len(new_transcript),
+                    sum(len(i.get("text", "")) for i in new_transcript),
+                )
+            except Exception as exc:
+                state["compressing"] = False
+                logger.warning("自动压缩失败: %s", exc)
+                await send_to_client({
+                    "type": "error",
+                    "message": f"自动压缩失败：{exc}",
+                })
+                return
+            # 重连必须放到独立任务：本回调运行在 bridge 自己的
+            # 接收循环任务里，直接 close 会自我取消（RecursionError）
+            asyncio.create_task(_reconnect_bridge(sid, new_transcript))
 
     try:
         while True:
@@ -517,28 +671,15 @@ async def ws_chat(
                     await send_to_client({"type": "error", "message": "会话不存在"})
                     continue
                 state["session_id"] = sid
-                # 从用户凭证读取 api_key 和 base_url
                 creds = auth.decrypt_user_credentials(username)
-                api_key = creds["api_key"]
-                base_url = creds["base_url"]
-                if not api_key:
+                if not creds["api_key"]:
                     await send_to_client({
                         "type": "error",
                         "message": "未配置 API key，请先在设置中填写",
                     })
                     continue
-                bridge = BRIDGE_CLASS(
-                    send_to_client=send_to_client,
-                    on_final_transcript=on_final_transcript,
-                    api_key=api_key,
-                    base_url=base_url,
-                )
                 try:
-                    await bridge.connect(
-                        instructions=compose_instructions(session["system_prompt"]),
-                        output_mode=session["output_mode"],
-                        history=session["transcript"],
-                    )
+                    await _create_bridge(session)
                 except Exception as exc:
                     logger.warning("连接 DashScope 失败: %s", exc)
                     await bridge.close()

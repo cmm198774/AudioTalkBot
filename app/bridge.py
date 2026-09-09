@@ -125,12 +125,19 @@ class RealtimeBridge:
         modalities = OUTPUT_MODE_MODALITIES.get(output_mode, ["text", "audio"])
         self._output_mode = output_mode
         headers = {"Authorization": f"Bearer {self._api_key}"}
+        logger.info("连接 WebSocket: %s", self._ws_url[:60])
         self._ws = await self._ws_factory(self._ws_url, headers)
+        logger.info("WebSocket 连接成功")
         await self._send_event(build_session_update(instructions, modalities, tools=[BOARD_TOOL]))
+        logger.info("session.update 已发送")
         if history:
-            for event in build_history_events(history):
+            events = build_history_events(history)
+            logger.info("发送 %d 条历史事件", len(events))
+            for event in events:
                 await self._send_event(event)
+            logger.info("历史事件发送完成")
         self._recv_task = asyncio.create_task(self._recv_loop())
+        logger.info("接收循环已启动")
 
     # ==========================================
     # 上行：发送音频块
@@ -166,14 +173,21 @@ class RealtimeBridge:
     async def close(self) -> None:
         """
         取消接收任务并关闭 WebSocket。
+        防御：若 close 在接收循环自己的任务内被调用（如
+        on_final_transcript 回调链），cancel+await 自身会导致
+        RecursionError，此时跳过取消、只清理引用并关闭连接。
         """
         if self._recv_task is not None:
-            self._recv_task.cancel()
-            try:
-                await self._recv_task
-            except asyncio.CancelledError:
-                pass
-            self._recv_task = None
+            if asyncio.current_task() is self._recv_task:
+                logger.debug("close 在接收循环任务内调用，跳过自我取消")
+                self._recv_task = None
+            else:
+                self._recv_task.cancel()
+                try:
+                    await self._recv_task
+                except asyncio.CancelledError:
+                    pass
+                self._recv_task = None
         if self._ws is not None:
             await self._ws.close()
             self._ws = None

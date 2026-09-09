@@ -427,7 +427,7 @@ def test_clear_history(auth_client):
 # ==========================================
 # 假摘要器：不发网络请求，返回固定摘要
 # ==========================================
-async def fake_summarizer(old_transcript):
+async def fake_summarizer(old_transcript, language=None):
     return f"共总结了{len(old_transcript)}条"
 
 
@@ -464,7 +464,7 @@ def test_compress_history_too_short(monkeypatch, auth_client):
 # 测试压缩时摘要服务失败返回 502
 # ==========================================
 def test_compress_history_summarizer_error(monkeypatch, auth_client):
-    async def broken_summarizer(old_transcript):
+    async def broken_summarizer(old_transcript, language=None):
         raise OSError("连接超时")
 
     monkeypatch.setattr(main, "SUMMARIZER", broken_summarizer)

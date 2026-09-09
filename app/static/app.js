@@ -381,6 +381,14 @@ function handleServerMessage(msg) {
         case 'context_usage':
             setContextUsage(msg.chars, msg.count);
             break;
+        case 'compressing':
+            toast('上下文超限，正在自动压缩并重新连接…', 5000);
+            break;
+        case 'auto_compressed':
+            toast('上下文已自动压缩并恢复连接', 3000);
+            // 回读压缩后的会话，刷新字幕区与上下文用量显示
+            refreshCurrentSession().catch(() => {});
+            break;
         case 'error':
             toast(msg.message);
             break;
