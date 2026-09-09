@@ -82,7 +82,9 @@ def test_build_audio_append():
 
 
 # ==========================================
-# 测试历史注入事件序列
+# 测试历史注入事件序列：打包为单条 user 笔记
+# （DashScope 的 assistant output_text 条目不进模型上下文，
+#   只有 user input_text 真正被记住，见 probe_history_variants）
 # ==========================================
 def test_build_history_events():
     transcript = [
@@ -90,16 +92,17 @@ def test_build_history_events():
         {"role": "assistant", "text": "Bonjour"},
     ]
     events = build_history_events(transcript)
-    assert len(events) == 2
-    first = events[0]
-    assert first["type"] == "conversation.item.create"
-    assert first["item"]["type"] == "message"
-    assert first["item"]["role"] == "user"
-    assert first["item"]["content"] == [{"type": "input_text", "text": "你好"}]
-    assert events[1]["item"]["role"] == "assistant"
-    # 协议要求助手消息用 output_text，否则服务端报
-    # "assistant role only supports content type 'output_text'"
-    assert events[1]["item"]["content"] == [{"type": "output_text", "text": "Bonjour"}]
+    assert len(events) == 1
+    item = events[0]["item"]
+    assert events[0]["type"] == "conversation.item.create"
+    assert item["type"] == "message"
+    assert item["role"] == "user"
+    assert item["content"][0]["type"] == "input_text"
+    note = item["content"][0]["text"]
+    # 笔记包含恢复说明与带角色前缀的完整对话
+    assert "[系统提示]" in note
+    assert "user: 你好" in note
+    assert "assistant: Bonjour" in note
 
 
 # ==========================================

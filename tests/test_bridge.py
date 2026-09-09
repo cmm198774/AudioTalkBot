@@ -118,8 +118,12 @@ async def test_connect_injects_history():
     bridge = make_bridge(fake_ws, urls, headers, received, finals)
     history = [{"role": "user", "text": "你好"}, {"role": "assistant", "text": "Bonjour"}]
     await bridge.connect("", "audio_text", history=history)
-    types = [e["type"] for e in fake_ws.sent]
-    assert types.count("conversation.item.create") == 2
+    # 历史打包为单条 user 笔记注入（assistant 条目会被 DashScope 静默忽略）
+    items = [e for e in fake_ws.sent if e["type"] == "conversation.item.create"]
+    assert len(items) == 1
+    note = items[0]["item"]["content"][0]["text"]
+    assert "user: 你好" in note
+    assert "assistant: Bonjour" in note
     await bridge.close()
 
 

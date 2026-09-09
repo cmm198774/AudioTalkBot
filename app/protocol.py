@@ -78,28 +78,13 @@ def build_audio_append(b64_audio: str) -> dict:
     return {"type": "input_audio_buffer.append", "audio": b64_audio}
 
 
-# ==========================================
-# 构造单条历史消息注入事件
-# ==========================================
-def build_history_item(role: str, text: str) -> dict:
-    """
-    构造一条历史消息的注入事件（用于恢复会话上下文）。
-    Args:
-        role: user 或 assistant (str)
-        text: 消息文本 (str)
-    Returns:
-        dict: conversation.item.create 事件 JSON
-    """
-    # 协议要求：助手消息内容类型为 output_text，用户消息为 input_text
-    content_type = "output_text" if role == "assistant" else "input_text"
-    return {
-        "type": "conversation.item.create",
-        "item": {
-            "type": "message",
-            "role": role,
-            "content": [{"type": content_type, "text": text}],
-        },
-    }
+# 历史注入笔记的开头说明：告诉模型这是恢复的对话记录
+_HISTORY_NOTE_HEADER = (
+    "[系统提示] 你正在恢复一段此前被中断的对话。"
+    "下面是之前的对话记录（user=用户说的话，assistant=你说过的话，"
+    "以[对话摘要]开头的是更早对话的总结）。"
+    "请记住这些内容，并基于它们自然地继续对话：\n"
+)
 
 
 # ==========================================
@@ -107,10 +92,28 @@ def build_history_item(role: str, text: str) -> dict:
 # ==========================================
 def build_history_events(transcript: list) -> list:
     """
-    将存档的对话记录转换为注入事件序列。
+    将存档的对话记录打包为单条 user 角色笔记注入。
+    DashScope 实测行为：assistant 角色条目仅接受 output_text 类型，
+    且该类型条目虽被 API 接受却不会进入模型上下文（模型完全看不到）；
+    只有 user 角色的 input_text 条目真正被模型记住。
+    因此把整段历史（含摘要）格式化成一条 user 笔记，确保恢复可见。
     Args:
         transcript: 对话记录列表，每项含 role 与 text (list)
     Returns:
-        list: conversation.item.create 事件列表
+        list: conversation.item.create 事件列表（至多一条）
     """
-    return [build_history_item(item["role"], item["text"]) for item in transcript]
+    if not transcript:
+        return []
+    lines = [
+        f"{item.get('role', 'user')}: {item.get('text', '')}"
+        for item in transcript
+    ]
+    note = _HISTORY_NOTE_HEADER + "\n".join(lines)
+    return [{
+        "type": "conversation.item.create",
+        "item": {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": note}],
+        },
+    }]
