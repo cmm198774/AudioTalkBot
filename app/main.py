@@ -610,14 +610,17 @@ async def ws_chat(
                 lang, snapshot_len, finalized,
             )
             summary = await SUMMARIZER(old, language=lang)
-            # 历史笔记的内容全部落入摘要范围，才允许删除笔记条目
-            note_covered = (snapshot_len - context.KEEP_RECENT) >= state["connect_len"]
+            # 笔记尾巴：历史笔记中未被摘要覆盖、也没有 live 条目对应的
+            # 近期记录（刚恢复的会话首轮压缩时存在），删笔记前需重注入，
+            # 保证会话内压缩在任意时刻都可用（无需回退重连）
+            boundary = snapshot_len - context.KEEP_RECENT
+            note_tail = transcript[boundary:state["connect_len"]]
             # cutoff 在快照时刻冻结：摘要期间新产生的对话条目全部保留；
             # 多减一条作保守缓冲，防止条目归属误差删掉近期窗口的内容
             cutoff = finalized - context.KEEP_RECENT - 1
             applied = False
-            if note_covered and bridge is b:
-                applied = await b.compress_in_session(summary, cutoff)
+            if bridge is b:
+                applied = await b.compress_in_session(summary, cutoff, note_tail)
             if applied:
                 # 存储合并：摘要 + 快照保留的尾部 + 摘要期间新增的条目
                 current = storage.get_session(username, sid)

@@ -199,29 +199,35 @@ class RealtimeBridge:
     # 会话内压缩：注入摘要 + 删除旧历史条目（不断线）
     # ==========================================
     async def compress_in_session(self, summary_text: str, cutoff_marker: int,
-                                  delete_history_note: bool = True) -> bool:
+                                  tail_transcript: list = None) -> bool:
         """
         在活动会话上直接应用压缩结果，全程不断开连接：
-        先注入摘要笔记条目，再逐条删除 marker 低于 cutoff 的旧条目。
+        先注入"摘要（+笔记尾巴）"条目，再逐条删除 marker 低于
+        cutoff 的旧 live 条目，并删除连接时注入的历史笔记
+        （笔记内容 = 摘要覆盖部分 + tail_transcript 重注入部分）。
         Args:
             summary_text: 摘要正文 (str)
-            cutoff_marker: 删除 marker 小于该值的条目 (int)
-            delete_history_note: 是否一并删除连接时注入的历史笔记 (bool)
+            cutoff_marker: 删除 marker 小于该值的 live 条目 (int)
+            tail_transcript: 笔记中未被摘要覆盖、需原样重注入的
+                近期记录，可为空 (list)
         Returns:
             bool: 是否发送成功（失败时调用方应回退到重连方案）
         """
         if self._ws is None:
             return False
         try:
-            await self._send_event(build_summary_item(summary_text))
+            await self._send_event(build_summary_item(summary_text, tail_transcript))
             to_delete = [iid for marker, iid in self._live_items if marker < cutoff_marker]
             self._live_items = [pair for pair in self._live_items if pair[0] >= cutoff_marker]
-            if delete_history_note and self._note_item_id:
+            if self._note_item_id:
                 to_delete.append(self._note_item_id)
                 self._note_item_id = None
             for item_id in to_delete:
                 await self._send_event(build_item_delete(item_id))
-            logger.info("会话内压缩完成：注入摘要，删除 %d 条旧历史", len(to_delete))
+            logger.info(
+                "会话内压缩完成：注入摘要（尾巴 %d 条），删除 %d 条旧历史",
+                len(tail_transcript or []), len(to_delete),
+            )
             return True
         except Exception as exc:
             logger.warning("会话内压缩失败: %s", exc)

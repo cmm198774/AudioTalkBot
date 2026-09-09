@@ -94,8 +94,8 @@ class FakeBridge:
         pass
 
     async def compress_in_session(self, summary_text, cutoff_marker,
-                                  delete_history_note=True):
-        self.compress_calls.append((summary_text, cutoff_marker, delete_history_note))
+                                  tail_transcript=None):
+        self.compress_calls.append((summary_text, cutoff_marker, tail_transcript))
         return self.compress_result
 
     async def close(self):
@@ -193,12 +193,12 @@ def test_ws_background_compress_in_session(monkeypatch):
     assert len(bridges) == 1
     assert closed_snapshot == [False]
     assert len(bridges[0].compress_calls) == 1
-    summary_text, cutoff, delete_note = bridges[0].compress_calls[0]
+    summary_text, cutoff, note_tail = bridges[0].compress_calls[0]
     assert summary_text == "summary of 5 items"
     # cutoff = finalized(7) - KEEP_RECENT(6) - 1（保守缓冲）= 0
     assert cutoff == 0
-    # 快照 11 - 保留 6 = 5 >= connect_len(4) → 笔记内容全部落入摘要，允许删除
-    assert delete_note is True
+    # 快照 11 - 保留 6 = 边界 5 > connect_len(4) → 笔记全被摘要覆盖，无尾巴
+    assert note_tail == []
 
     # 存储合并：摘要 + 快照尾部 6 条 = 7 条
     session = client.get(f"/api/sessions/{sid}").json()
@@ -209,6 +209,62 @@ def test_ws_background_compress_in_session(monkeypatch):
 
     # 压缩后的上下文用量已推送（7 条）
     assert any(m["type"] == "context_usage" and m["count"] == 7 for m in msgs)
+
+
+# ==========================================
+# 测试刚恢复的会话首轮触发压缩也走零中断路径
+# 场景：30 条长历史（connect_len=30，全部在历史笔记里），
+# 用户开口 1 轮即超阈值。此时 live 条目只有 1 条，笔记里
+# 有一段（边界 25 到 30 共 5 条）未被摘要覆盖、也没有 live
+# 条目对应 → 必须作为尾巴重注入，不能回退重连。
+# ==========================================
+def test_ws_resume_session_first_compress_in_session(monkeypatch):
+    async def fake_summarizer(old_transcript, language=None):
+        return f"summary of {len(old_transcript)} items"
+
+    bridges = []
+
+    def fake_bridge_factory(**kwargs):
+        bridge = FakeBridge(live_turns=1, **kwargs)
+        bridges.append(bridge)
+        return bridge
+
+    monkeypatch.setattr(main, "SUMMARIZER", fake_summarizer)
+    monkeypatch.setattr(main, "BRIDGE_CLASS", fake_bridge_factory)
+
+    client = TestClient(main.app)
+    client.post("/api/auth/register", json={"username": "resumeuser", "password": "pass123"})
+    client.put("/api/credentials", json={"api_key": "sk-test", "base_url": ""})
+    sid = client.post("/api/sessions", json={}).json()["id"]
+    for i in range(30):
+        role = "user" if i % 2 == 0 else "assistant"
+        storage.append_transcript("resumeuser", sid, role, f"第{i}条" + "长" * 600)
+
+    msgs, closed_snapshot = run_until_compressed(client, sid, bridges)
+
+    types = [m["type"] for m in msgs]
+    assert types[-1] == "auto_compressed", f"消息序列异常: {types}"
+    assert "error" not in types
+
+    # 零中断：只有一个 bridge 且未被关闭（未走重连回退）
+    assert len(bridges) == 1
+    assert closed_snapshot == [False]
+    summary_text, cutoff, note_tail = bridges[0].compress_calls[0]
+    # 快照 31 条（30 历史 + 1 live），摘要覆盖前 25 条
+    assert summary_text == "summary of 25 items"
+    # cutoff = finalized(1) - 6 - 1 = -6 → 不删任何 live 条目
+    assert cutoff == -6
+    # 笔记尾巴 = transcript[25:30] 共 5 条，需重注入
+    assert len(note_tail) == 5
+    assert note_tail[0]["text"].startswith("第25条")
+
+    # 存储合并：摘要 + 尾部 6 条 = 7 条
+    session = client.get(f"/api/sessions/{sid}").json()
+    transcript = session["transcript"]
+    assert len(transcript) == 7
+    assert transcript[0]["text"].startswith(SUMMARY_PREFIX)
+    assert "summary of 25 items" in transcript[0]["text"]
+    assert transcript[1]["text"].startswith("第25条")
 
 
 # ==========================================

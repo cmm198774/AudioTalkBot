@@ -137,7 +137,6 @@ async def main() -> int:
         ok = await bridge.compress_in_session(
             f"Summary of earlier conversation: the user's first secret is {SECRET_NOTE}.",
             cutoff_marker=10 ** 6,
-            delete_history_note=True,
         )
         if not ok:
             print("FAIL: compress_in_session 返回 False")

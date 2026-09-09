@@ -452,8 +452,11 @@ async def test_compress_in_session_injects_summary_and_deletes():
     assert bridge._note_item_id == "item_note"
     assert bridge._live_items == [[0, "item_u1"], [1, "item_a1"]]
 
-    # cutoff=1：删除 marker<1 的条目（item_u1）+ 历史笔记，保留 item_a1
-    ok = await bridge.compress_in_session("旧对话摘要", cutoff_marker=1)
+    # cutoff=1：删除 marker<1 的条目（item_u1）+ 历史笔记，保留 item_a1；
+    # 笔记尾巴（未被摘要覆盖的近期记录）随摘要一并重注入
+    tail = [{"role": "user", "text": "保留这句近期记录"}]
+    ok = await bridge.compress_in_session("旧对话摘要", cutoff_marker=1,
+                                          tail_transcript=tail)
     assert ok is True
     # 摘要以 user input_text 条目注入（assistant 条目不进模型上下文）
     summaries = [e for e in fake_ws.sent
@@ -462,6 +465,10 @@ async def test_compress_in_session_injects_summary_and_deletes():
                  and "旧对话摘要" in e["item"]["content"][0]["text"]]
     assert len(summaries) == 1
     assert summaries[0]["item"]["content"][0]["type"] == "input_text"
+    # 尾巴出现在注入笔记的 [近期对话记录] 段
+    note_text = summaries[0]["item"]["content"][0]["text"]
+    assert "[近期对话记录]" in note_text
+    assert "user: 保留这句近期记录" in note_text
     # 删除事件：先旧 live 条目，再历史笔记
     deletes = [e["item_id"] for e in fake_ws.sent if e["type"] == "conversation.item.delete"]
     assert deletes == ["item_u1", "item_note"]

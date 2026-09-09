@@ -97,24 +97,32 @@ _SUMMARY_NOTE_HEADER = (
 # ==========================================
 # 构造会话内压缩的摘要注入事件
 # ==========================================
-def build_summary_item(summary_text: str) -> dict:
+def build_summary_item(summary_text: str, tail_transcript: list = None) -> dict:
     """
     把摘要打包为一条 user input_text 条目注入活动会话
     （assistant 条目不进模型上下文，必须用 user 角色）。
+    tail_transcript 用于"刚恢复的会话"场景：历史笔记里有一段
+    未被摘要覆盖、也没有对应 live 条目的近期记录，删除笔记前
+    必须把这段尾巴一并重注入，否则模型会丢失这部分内容。
     Args:
         summary_text: 摘要正文 (str)
+        tail_transcript: 需原样保留的笔记尾部记录，可为空 (list)
     Returns:
         dict: conversation.item.create 事件 JSON
     """
+    text = _SUMMARY_NOTE_HEADER + summary_text.strip()
+    if tail_transcript:
+        lines = [
+            f"{item.get('role', 'user')}: {item.get('text', '')}"
+            for item in tail_transcript
+        ]
+        text += "\n\n[近期对话记录]\n" + "\n".join(lines)
     return {
         "type": "conversation.item.create",
         "item": {
             "type": "message",
             "role": "user",
-            "content": [{
-                "type": "input_text",
-                "text": _SUMMARY_NOTE_HEADER + summary_text.strip(),
-            }],
+            "content": [{"type": "input_text", "text": text}],
         },
     }
 
