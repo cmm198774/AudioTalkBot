@@ -29,9 +29,9 @@ services:
       - TZ=Asia/Shanghai
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
-    # 健康检查
+    # 健康检查（镜像内无 curl，用 python 标准库探活）
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
