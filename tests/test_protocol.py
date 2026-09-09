@@ -4,8 +4,10 @@
 from app.protocol import (
     build_audio_append,
     build_history_events,
+    build_item_delete,
     build_response_create,
     build_session_update,
+    build_summary_item,
     build_tool_output,
 )
 
@@ -110,3 +112,28 @@ def test_build_history_events():
 # ==========================================
 def test_build_history_events_empty():
     assert build_history_events([]) == []
+
+
+# ==========================================
+# 测试会话内压缩的摘要注入事件（user input_text 条目）
+# ==========================================
+def test_build_summary_item():
+    event = build_summary_item("用户养了一只叫豆豆的橘猫")
+    assert event["type"] == "conversation.item.create"
+    item = event["item"]
+    assert item["type"] == "message"
+    assert item["role"] == "user"
+    assert item["content"][0]["type"] == "input_text"
+    text = item["content"][0]["text"]
+    assert "[系统提示]" in text
+    assert "用户养了一只叫豆豆的橘猫" in text
+
+
+# ==========================================
+# 测试历史条目删除事件
+# ==========================================
+def test_build_item_delete():
+    assert build_item_delete("item_abc") == {
+        "type": "conversation.item.delete",
+        "item_id": "item_abc",
+    }

@@ -87,6 +87,52 @@ _HISTORY_NOTE_HEADER = (
 )
 
 
+# 会话内压缩摘要笔记的开头说明：告诉模型这是更早对话的总结
+_SUMMARY_NOTE_HEADER = (
+    "[系统提示] 以下是更早对话的摘要（原始记录已压缩删除）。"
+    "请记住这些内容，并基于它们自然地继续对话：\n"
+)
+
+
+# ==========================================
+# 构造会话内压缩的摘要注入事件
+# ==========================================
+def build_summary_item(summary_text: str) -> dict:
+    """
+    把摘要打包为一条 user input_text 条目注入活动会话
+    （assistant 条目不进模型上下文，必须用 user 角色）。
+    Args:
+        summary_text: 摘要正文 (str)
+    Returns:
+        dict: conversation.item.create 事件 JSON
+    """
+    return {
+        "type": "conversation.item.create",
+        "item": {
+            "type": "message",
+            "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": _SUMMARY_NOTE_HEADER + summary_text.strip(),
+            }],
+        },
+    }
+
+
+# ==========================================
+# 构造历史条目删除事件（会话内压缩用）
+# ==========================================
+def build_item_delete(item_id: str) -> dict:
+    """
+    删除活动会话中的一条历史条目，服务端回 conversation.item.deleted。
+    Args:
+        item_id: 服务端条目 ID (str)
+    Returns:
+        dict: conversation.item.delete 事件 JSON
+    """
+    return {"type": "conversation.item.delete", "item_id": item_id}
+
+
 # ==========================================
 # 构造完整历史注入事件序列
 # ==========================================

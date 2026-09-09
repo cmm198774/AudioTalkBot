@@ -382,12 +382,12 @@ function handleServerMessage(msg) {
             setContextUsage(msg.chars, msg.count);
             break;
         case 'compressing':
-            toast('上下文超限，正在自动压缩并重新连接…', 5000);
+            toast('上下文超限，正在后台压缩，对话不受影响…', 5000);
             break;
         case 'auto_compressed':
-            toast('上下文已自动压缩并恢复连接', 3000);
-            // 回读压缩后的会话，刷新字幕区与上下文用量显示
-            refreshCurrentSession().catch(() => {});
+            // 后台压缩完成：对话未中断，不重渲染字幕区（避免打断进行中的
+            // 气泡），上下文用量由服务端先一步推送的 context_usage 消息刷新
+            toast('后台压缩完成，对话未中断', 3000);
             break;
         case 'error':
             toast(msg.message);

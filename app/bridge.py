@@ -12,6 +12,11 @@
 # "仅语音"输出模式：API 强制 modalities 含 text（纯 audio 会被整体拒绝，
 # 人设与工具都注册不上），因此 API 层与"语音+文字"相同，
 # 由本模块负责不把字幕推送给前端（照常累积与持久化）。
+#
+# 会话内压缩：追踪服务端历史条目 ID（item.created / committed /
+# output_item.done），compress_in_session 可在不断线的情况下注入摘要
+# 笔记并删除旧条目（探针实测 qwen-audio-3.0-realtime-plus 支持
+# conversation.item.delete 且删除真正生效）。
 # ==========================================
 import asyncio
 import json
@@ -30,8 +35,10 @@ from app.config import (
 from app.protocol import (
     build_audio_append,
     build_history_events,
+    build_item_delete,
     build_response_create,
     build_session_update,
+    build_summary_item,
     build_tool_output,
 )
 
@@ -48,9 +55,8 @@ _IGNORED_EVENTS = (
     "session.created",
     "session.updated",
     "input_audio_buffer.speech_stopped",
-    "input_audio_buffer.committed",
+    "conversation.item.deleted",
     "response.output_item.added",
-    "response.output_item.done",
     "response.content_part.added",
     "response.content_part.done",
     "response.audio.done",
@@ -95,6 +101,15 @@ class RealtimeBridge:
         self._pending_calls = []      # 当前 response 内待回传结果的工具调用 ID
         self._interrupted = False     # 当前 response 是否被用户打断
         self._output_mode = "audio_text"  # 仅语音模式下不向前端推字幕
+        # ---- 会话内压缩支持 ----
+        # 已持久化的转写条数（与存储 transcript 的实时增量一一对应）
+        self._finalized_count = 0
+        # 服务端历史条目追踪：[marker, item_id]，marker 为条目被观察到
+        # 时的 finalized_count，用于压缩时判断哪些条目已落入摘要范围
+        self._live_items = []
+        # 连接时注入的历史笔记条目 ID（压缩时可整体删除）
+        self._note_item_id = None
+        self._expect_note = False
 
     # ==========================================
     # 默认 WebSocket 工厂（生产路径）
@@ -133,6 +148,7 @@ class RealtimeBridge:
         if history:
             events = build_history_events(history)
             logger.info("发送 %d 条历史事件", len(events))
+            self._expect_note = True  # 下一个 item.created 即历史笔记
             for event in events:
                 await self._send_event(event)
             logger.info("历史事件发送完成")
@@ -166,6 +182,81 @@ class RealtimeBridge:
         modalities = OUTPUT_MODE_MODALITIES.get(output_mode, ["text", "audio"])
         self._output_mode = output_mode
         await self._send_event(build_session_update(instructions, modalities, tools=[BOARD_TOOL]))
+
+    # ==========================================
+    # 已持久化的转写条数（main.py 计算压缩 cutoff 用）
+    # ==========================================
+    @property
+    def finalized_count(self) -> int:
+        """
+        返回本连接内已触发持久化的转写条数。
+        Returns:
+            int: 条数
+        """
+        return self._finalized_count
+
+    # ==========================================
+    # 会话内压缩：注入摘要 + 删除旧历史条目（不断线）
+    # ==========================================
+    async def compress_in_session(self, summary_text: str, cutoff_marker: int,
+                                  delete_history_note: bool = True) -> bool:
+        """
+        在活动会话上直接应用压缩结果，全程不断开连接：
+        先注入摘要笔记条目，再逐条删除 marker 低于 cutoff 的旧条目。
+        Args:
+            summary_text: 摘要正文 (str)
+            cutoff_marker: 删除 marker 小于该值的条目 (int)
+            delete_history_note: 是否一并删除连接时注入的历史笔记 (bool)
+        Returns:
+            bool: 是否发送成功（失败时调用方应回退到重连方案）
+        """
+        if self._ws is None:
+            return False
+        try:
+            await self._send_event(build_summary_item(summary_text))
+            to_delete = [iid for marker, iid in self._live_items if marker < cutoff_marker]
+            self._live_items = [pair for pair in self._live_items if pair[0] >= cutoff_marker]
+            if delete_history_note and self._note_item_id:
+                to_delete.append(self._note_item_id)
+                self._note_item_id = None
+            for item_id in to_delete:
+                await self._send_event(build_item_delete(item_id))
+            logger.info("会话内压缩完成：注入摘要，删除 %d 条旧历史", len(to_delete))
+            return True
+        except Exception as exc:
+            logger.warning("会话内压缩失败: %s", exc)
+            return False
+
+    # ==========================================
+    # 内部：记录一个服务端历史条目 ID
+    # ==========================================
+    def _record_live_item(self, item_id: str) -> None:
+        """
+        以当前 finalized_count 为 marker 记录条目 ID。
+        Args:
+            item_id: 服务端条目 ID，空值忽略 (str)
+        """
+        if item_id:
+            self._live_items.append([self._finalized_count, item_id])
+
+    # ==========================================
+    # 内部：conversation.item.created 事件
+    # ==========================================
+    def _handle_item_created(self, event: dict) -> None:
+        """
+        记录客户端创建条目的 ID；连接后的第一条是历史笔记，单独记录。
+        Args:
+            event: conversation.item.created 事件 (dict)
+        """
+        item_id = event.get("item", {}).get("id", "")
+        if not item_id:
+            return
+        if self._expect_note and self._note_item_id is None:
+            self._note_item_id = item_id
+            self._expect_note = False
+            logger.debug("历史笔记条目 ID: %s", item_id)
+            return
+        self._record_live_item(item_id)
 
     # ==========================================
     # 关闭连接与接收任务
@@ -276,6 +367,12 @@ class RealtimeBridge:
             await self._handle_response_done()
         elif etype == "conversation.item.input_audio_transcription.completed":
             await self._handle_user_transcript(event)
+        elif etype == "conversation.item.created":
+            self._handle_item_created(event)
+        elif etype == "input_audio_buffer.committed":
+            self._record_live_item(event.get("item_id", ""))
+        elif etype == "response.output_item.done":
+            self._record_live_item(event.get("item", {}).get("id", ""))
         elif etype == "error":
             err = event.get("error", {})
             await self._emit({"type": "error", "message": err.get("message", str(err))})
@@ -361,6 +458,7 @@ class RealtimeBridge:
                 await self._send_event(build_response_create())
                 return  # 回合继续，不持久化、不切 listening
         if self._assistant_text and self._on_final_transcript is not None:
+            self._finalized_count += 1
             await self._on_final_transcript("assistant", self._assistant_text)
             self._assistant_text = ""
         await self._emit({"type": "state", "value": "listening"})
@@ -380,4 +478,5 @@ class RealtimeBridge:
         if self._output_mode != "audio":
             await self._emit({"type": "transcript", "role": "user", "delta": text, "final": True})
         if self._on_final_transcript is not None:
+            self._finalized_count += 1
             await self._on_final_transcript("user", text)

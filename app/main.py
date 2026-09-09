@@ -456,36 +456,6 @@ def compose_instructions(persona: str) -> str:
 
 
 # ==========================================
-# 自动压缩：检测语言 + 生成摘要 + 替换存储
-# ==========================================
-async def auto_compress_session(username: str, session: dict) -> list:
-    """
-    检测旧对话的主要语言，用同语言生成摘要，压缩后替换存储。
-    Args:
-        username: 当前用户名 (str)
-        session: 当前会话记录 (dict)
-    Returns:
-        list: 压缩后的新对话历史
-    Raises:
-        Exception: 摘要生成失败
-    """
-    old, recent = context.split_old_recent(session["transcript"])
-    if not old:
-        return session["transcript"]
-    old_text = "\n".join(item.get("text", "") for item in old)
-    lang = context.detect_language(old_text)
-    logger.info(
-        "上下文超限（%d 字符），自动压缩（语言=%s）",
-        sum(len(item.get("text", "")) for item in session["transcript"]),
-        lang,
-    )
-    summary = await SUMMARIZER(old, language=lang)
-    new_transcript = context.merge_compressed(summary, recent)
-    storage.replace_transcript(username, session["id"], new_transcript)
-    return new_transcript
-
-
-# ==========================================
 # 对话 WebSocket 端点
 # ==========================================
 @app.websocket("/ws/chat")
@@ -506,7 +476,8 @@ async def ws_chat(
         return
     await ws.accept()
     bridge = None
-    state = {"session_id": None, "compressing": False}
+    # connect_len：bridge 连接时注入历史笔记覆盖的 transcript 条数
+    state = {"session_id": None, "compressing": False, "connect_len": 0}
 
     async def send_to_client(msg: dict) -> None:
         """
@@ -552,17 +523,16 @@ async def ws_chat(
             output_mode=output_mode,
             history=hist,
         )
+        state["connect_len"] = len(hist)
         logger.info("bridge.connect() 完成")
 
     # ==========================================
-    # 辅助：压缩后关闭旧 bridge 并重连（独立任务中执行）
+    # 辅助：压缩后关闭旧 bridge 并重连（回退方案）
     # ==========================================
     async def _reconnect_bridge(sid: str, new_transcript: list) -> None:
         """
         关闭旧 bridge 并用压缩后的历史重新连接，最多重试 3 次。
-        必须以独立 asyncio 任务运行：on_final_transcript 回调发生在
-        bridge 自己的接收循环任务内，若在回调里直接 close 会
-        自我取消导致 RecursionError。
+        仅在会话内压缩不可用时作为回退方案执行。
         Args:
             sid: 会话 id (str)
             new_transcript: 压缩后的对话历史 (list)
@@ -607,10 +577,82 @@ async def ws_chat(
         finally:
             state["compressing"] = False
 
+    # ==========================================
+    # 辅助：后台压缩任务（对话继续，摘要并行生成）
+    # ==========================================
+    async def _background_compress(sid: str) -> None:
+        """
+        后台压缩：语音会话不中断，摘要模型并行工作。
+        优先"会话内压缩"（注入摘要条目 + 删除旧条目，零中断），
+        不可用时回退到断线重连方案。
+        必须以独立 asyncio 任务运行：摘要耗时数秒，不能阻塞
+        bridge 的接收循环；且触发点在接收循环任务内部。
+        Args:
+            sid: 会话 id (str)
+        """
+        nonlocal bridge
+        try:
+            b = bridge
+            session = storage.get_session(username, sid)
+            if session is None or b is None:
+                return
+            transcript = session["transcript"]
+            snapshot_len = len(transcript)
+            finalized = b.finalized_count
+            old, _ = context.split_old_recent(transcript)
+            if not old:
+                return
+            old_text = "\n".join(item.get("text", "") for item in old)
+            lang = context.detect_language(old_text)
+            logger.info(
+                "后台压缩开始：%d 字符，语言=%s，快照 %d 条（live %d 条）",
+                sum(len(i.get("text", "")) for i in transcript),
+                lang, snapshot_len, finalized,
+            )
+            summary = await SUMMARIZER(old, language=lang)
+            # 历史笔记的内容全部落入摘要范围，才允许删除笔记条目
+            note_covered = (snapshot_len - context.KEEP_RECENT) >= state["connect_len"]
+            # cutoff 在快照时刻冻结：摘要期间新产生的对话条目全部保留；
+            # 多减一条作保守缓冲，防止条目归属误差删掉近期窗口的内容
+            cutoff = finalized - context.KEEP_RECENT - 1
+            applied = False
+            if note_covered and bridge is b:
+                applied = await b.compress_in_session(summary, cutoff)
+            if applied:
+                # 存储合并：摘要 + 快照保留的尾部 + 摘要期间新增的条目
+                current = storage.get_session(username, sid)
+                tail = current["transcript"][snapshot_len - context.KEEP_RECENT:]
+                new_transcript = context.merge_compressed(summary, tail)
+                storage.replace_transcript(username, sid, new_transcript)
+                chars = sum(len(i.get("text", "")) for i in new_transcript)
+                logger.info("会话内压缩完成：%d 条（%d 字符），连接未中断",
+                            len(new_transcript), chars)
+                await send_to_client({
+                    "type": "context_usage",
+                    "chars": chars,
+                    "count": len(new_transcript),
+                })
+                await send_to_client({"type": "auto_compressed"})
+            else:
+                # 回退：旧的重连方案（有 1~2 秒中断）
+                logger.info("会话内压缩不可用，回退到重连方案")
+                recent = transcript[-context.KEEP_RECENT:]
+                new_transcript = context.merge_compressed(summary, recent)
+                storage.replace_transcript(username, sid, new_transcript)
+                await _reconnect_bridge(sid, new_transcript)
+        except Exception as exc:
+            logger.warning("自动压缩失败: %s", exc)
+            await send_to_client({
+                "type": "error",
+                "message": f"自动压缩失败：{exc}",
+            })
+        finally:
+            state["compressing"] = False
+
     async def on_final_transcript(role: str, text: str) -> None:
         """
         最终转写落盘；推送最新上下文用量；首句用户发言自动命名会话。
-        上下文超限时自动压缩并重连 bridge。
+        上下文超限时启动后台压缩任务（对话不中断）。
         Args:
             role: user 或 assistant (str)
             text: 转写文本 (str)
@@ -633,30 +675,13 @@ async def ws_chat(
             title = text.strip()[:20] or "新对话"
             storage.update_session(username, sid, title=title)
             await send_to_client({"type": "title", "value": title})
-        # 上下文超限 → 自动压缩（compressing 标记防止重入）
+        # 上下文超限 → 后台压缩（compressing 标记防止重入）
         if chars > AUTO_COMPRESS_THRESHOLD and not state["compressing"]:
             state["compressing"] = True
-            try:
-                await send_to_client({"type": "compressing"})
-                logger.info("开始自动压缩，session=%s, chars=%d", sid, chars)
-                new_transcript = await auto_compress_session(username, session)
-                logger.info(
-                    "压缩完成: %d 条 → %d 条 (%d 字符)",
-                    len(session["transcript"]),
-                    len(new_transcript),
-                    sum(len(i.get("text", "")) for i in new_transcript),
-                )
-            except Exception as exc:
-                state["compressing"] = False
-                logger.warning("自动压缩失败: %s", exc)
-                await send_to_client({
-                    "type": "error",
-                    "message": f"自动压缩失败：{exc}",
-                })
-                return
-            # 重连必须放到独立任务：本回调运行在 bridge 自己的
-            # 接收循环任务里，直接 close 会自我取消（RecursionError）
-            asyncio.create_task(_reconnect_bridge(sid, new_transcript))
+            await send_to_client({"type": "compressing"})
+            logger.info("上下文超限（%d 字符），启动后台压缩，session=%s", chars, sid)
+            # 独立任务：摘要耗时数秒，不能阻塞接收循环，对话照常进行
+            asyncio.create_task(_background_compress(sid))
 
     try:
         while True:

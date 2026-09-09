@@ -429,6 +429,60 @@ async def test_update_session_switches_to_audio_mode():
 
 
 # ==========================================
+# 测试会话内压缩：条目 ID 追踪 + 注入摘要 + 删除旧条目
+# ==========================================
+async def test_compress_in_session_injects_summary_and_deletes():
+    fake_ws = FakeWebSocket([
+        # 连接时注入的历史笔记条目
+        {"type": "conversation.item.created", "item": {"id": "item_note"}},
+        # 一轮完整对话：用户音频条目 → 转写 → 助手输出条目 → 回合结束
+        {"type": "input_audio_buffer.committed", "item_id": "item_u1"},
+        {"type": "conversation.item.input_audio_transcription.completed", "transcript": "你好"},
+        {"type": "response.audio_transcript.delta", "delta": "Bonjour"},
+        {"type": "response.output_item.done", "item": {"id": "item_a1"}},
+        {"type": "response.done"},
+    ])
+    urls, headers, received, finals = [], [], [], []
+    bridge = make_bridge(fake_ws, urls, headers, received, finals)
+    await bridge.connect("", "audio_text", history=[{"role": "user", "text": "你好"}])
+    await bridge.wait_recv_done()
+
+    # 条目追踪：笔记单独记录，live 条目带 finalized marker
+    assert bridge.finalized_count == 2
+    assert bridge._note_item_id == "item_note"
+    assert bridge._live_items == [[0, "item_u1"], [1, "item_a1"]]
+
+    # cutoff=1：删除 marker<1 的条目（item_u1）+ 历史笔记，保留 item_a1
+    ok = await bridge.compress_in_session("旧对话摘要", cutoff_marker=1)
+    assert ok is True
+    # 摘要以 user input_text 条目注入（assistant 条目不进模型上下文）
+    summaries = [e for e in fake_ws.sent
+                 if e["type"] == "conversation.item.create"
+                 and e["item"].get("role") == "user"
+                 and "旧对话摘要" in e["item"]["content"][0]["text"]]
+    assert len(summaries) == 1
+    assert summaries[0]["item"]["content"][0]["type"] == "input_text"
+    # 删除事件：先旧 live 条目，再历史笔记
+    deletes = [e["item_id"] for e in fake_ws.sent if e["type"] == "conversation.item.delete"]
+    assert deletes == ["item_u1", "item_note"]
+    assert bridge._live_items == [[1, "item_a1"]]
+    assert bridge._note_item_id is None
+    await bridge.close()
+
+
+# ==========================================
+# 测试连接已关闭时会话内压缩返回 False（触发重连回退）
+# ==========================================
+async def test_compress_in_session_after_close_returns_false():
+    fake_ws = FakeWebSocket([{"type": "session.created"}])
+    urls, headers, received, finals = [], [], [], []
+    bridge = make_bridge(fake_ws, urls, headers, received, finals)
+    await bridge.connect("", "audio_text")
+    await bridge.close()
+    assert await bridge.compress_in_session("摘要", cutoff_marker=0) is False
+
+
+# ==========================================
 # 测试工具参数非法 JSON：不上黑板、不崩溃，流程照常续说
 # ==========================================
 async def test_malformed_arguments_no_board():
